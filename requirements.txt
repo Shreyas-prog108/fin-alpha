@@ -5,3 +5,4 @@ pydantic
 numpy
 python-dotenv
 gemini-python
+yfinance
