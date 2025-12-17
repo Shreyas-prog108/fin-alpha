@@ -17,8 +17,8 @@ class YahooFinanceClient:
     """
     
     def __init__(self):
-        self.cache = {}  # Simple cache: {key: (data, timestamp)}
-        self.cache_ttl = 300  # 5 minutes
+        self.cache = {}
+        self.cache_ttl = 300 
     
     def _get_cached(self, key: str) -> Optional[Dict]:
         """Get cached data if not expired"""
@@ -302,8 +302,6 @@ class YahooFinanceClient:
         """Clear all cached data"""
         self.cache.clear()
 
-
-# Singleton instance
 _yahoo_client = None
 
 def get_yahoo_client() -> YahooFinanceClient:

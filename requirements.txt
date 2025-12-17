@@ -6,3 +6,5 @@ numpy
 python-dotenv
 gemini-python
 yfinance
+langchain
+langgraph
