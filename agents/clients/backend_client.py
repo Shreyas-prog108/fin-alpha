@@ -1,12 +1,6 @@
-"""
-Backend API Client
-Client for calling FinAgent FastAPI backend
-"""
-
 import httpx
 import os
 from typing import Dict, List, Optional
-
 
 class BackendClient:
     """
@@ -15,17 +9,12 @@ class BackendClient:
     """
     
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
-        self.base_url = base_url or os.getenv("BACKEND_URL")
+        self.base_url = base_url or os.getenv("BACKEND_URL", "http://localhost:8000")
         self.api_key = api_key or os.getenv("API_KEY")
         self.timeout = 30.0
         self._client = None
         
-        # Validate base_url
-        if not self.base_url:
-            raise ValueError("BACKEND_URL environment variable must be set")
-        
-        # Ensure HTTPS in production
-        if not self.base_url.startswith(("http://", "https://")):
+        if self.base_url and not self.base_url.startswith(("http://", "https://")):
             raise ValueError("BACKEND_URL must start with http:// or https://")
     
     @property
@@ -264,8 +253,6 @@ class BackendClient:
     
     def __del__(self):
         """Cleanup on deletion"""
-        # SECURITY FIX: Don't use asyncio.create_task in __del__
-        # Just log and let the client be garbage collected
         if self._client:
             import warnings
             warnings.warn(

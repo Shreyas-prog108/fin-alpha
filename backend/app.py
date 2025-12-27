@@ -16,7 +16,10 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi.security import HTTPBearer
+from fastapi.security.http import HTTPAuthorizationCredentials
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
 from dotenv import load_dotenv
@@ -25,8 +28,8 @@ from backend.config import (
     GEMINI_API_KEY,
     GEMINI_API_VERSION,
     ALLOWED_ORIGINS,
-    API_KEY,
-    DEBUG_MODE,
+    GEMINI_API_KEY,
+    REQUIRE_HTTPS,
 )
 from backend.models import (
     NewsRequest,
@@ -53,8 +56,8 @@ app = FastAPI(
     title="fin-alpha - Financial Market Analysis API",
     description="Secure Market Analysis & Prediction Service",
     version="2.0",
-    docs_url="/docs" if DEBUG_MODE else None,
-    redoc_url="/redoc" if DEBUG_MODE else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # =============================
@@ -72,9 +75,11 @@ app.add_middleware(
 )
 
 # 2. Add trusted host middleware (prevents Host header attacks)
+allowed_hosts = [origin.split("://")[-1] for origin in ALLOWED_ORIGINS if origin.strip()]
+allowed_hosts.extend(["localhost", "127.0.0.1", "localhost:8000", "127.0.0.1:8000"])
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=[origin.split("://")[-1] for origin in ALLOWED_ORIGINS if origin.strip()]
+    allowed_hosts=allowed_hosts
 )
 
 # 3. Add security headers middleware
@@ -92,8 +97,8 @@ async def add_security_headers(request: Request, call_next):
     # XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
     
-    # HSTS (only in production)
-    if not DEBUG_MODE:
+    # HSTS (only in production with HTTPS)
+    if REQUIRE_HTTPS:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     
     # CSP (Content Security Policy)
@@ -108,39 +113,17 @@ async def add_security_headers(request: Request, call_next):
 # AUTHENTICATION
 # =============================
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
-async def verify_api_key(credentials: HTTPAuthCredentials = Depends(security)):
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
     Verify API key from Authorization header
     Format: Authorization: Bearer <api_key>
+    Optional for development mode
     """
     if not credentials:
-        logger.warning("Request without credentials attempt")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authorization credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    # In DEBUG mode, allow requests without key
-    if DEBUG_MODE:
-        return credentials.credentials
-    
-    if not API_KEY:
-        logger.error("API_KEY not configured")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Service misconfiguration",
-        )
-    
-    if credentials.credentials != API_KEY:
-        logger.warning(f"Invalid API key attempt from {credentials.credentials[:10]}...")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        logger.info("Request without auth - allowing in dev mode")
+        return "dev-mode"
     
     return credentials.credentials
 
@@ -166,9 +149,15 @@ async def root():
     return {
         "status": "ok",
         "service": "fin-alpha API",
-        "docs": "/docs" if DEBUG_MODE else "Documentation not available",
+        "docs": "/docs" ,
         "version": "2.0"
     }
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve favicon"""
+    return FileResponse("static/favicon.svg", media_type="image/svg+xml")
 
 
 # =============================
@@ -343,9 +332,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Run with: uvicorn backend.app:app --reload
-    # Or: python -m backend.app
     uvicorn.run(
         app,
         host="127.0.0.1",

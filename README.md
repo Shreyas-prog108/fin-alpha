@@ -16,8 +16,10 @@ echo "GEMINI_API_KEY=your_key_here" >> .env
 echo "BACKEND_URL=http://localhost:8000" >> .env
 
 # Run
-python3 agents/run.py
 uvicorn backend.app:app --reload
+
+# Or run the agent CLI
+python3 agents/run.py
 ```
 
 ## API Usage

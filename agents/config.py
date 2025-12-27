@@ -16,7 +16,7 @@ class AgentConfig(BaseSettings):
     GEMINI_API_KEY: str = Field(...)
     NEWSAPI_KEY: Optional[str] = Field(None)
     NEWSAPI_URL: str = Field("https://newsapi.org/v2")
-    BACKEND_URL: Optional[str] = Field(None)   
+    BACKEND_URL: Optional[str] = Field("http://localhost:8000")   
     API_KEY: Optional[str] = Field(None) 
     GEMINI_MODEL: str = Field("gemini-3-flash-preview")
     LLM_TEMPERATURE: float = Field(1.0, ge=0.0, le=2.0)
@@ -36,17 +36,13 @@ class AgentConfig(BaseSettings):
     @field_validator('BACKEND_URL')
     @classmethod
     def validate_backend_url(cls, v):
-        """Validate BACKEND_URL is set and valid"""
-        if not v:
-            raise ValueError("BACKEND_URL environment variable must be set")
-        if not v.startswith(("http://", "https://")):
+        if v and not v.startswith(("http://", "https://")):
             raise ValueError("BACKEND_URL must start with http:// or https://")
         return v
     
     @field_validator('GEMINI_API_KEY')
     @classmethod
     def validate_gemini_key(cls, v):
-        """Validate GEMINI_API_KEY is not empty"""
         if not v or len(v) == 0:
             raise ValueError("GEMINI_API_KEY must be set")
         return v
@@ -54,7 +50,6 @@ class AgentConfig(BaseSettings):
     @field_validator('LOG_LEVEL')
     @classmethod
     def validate_log_level(cls, v):
-        """Validate LOG_LEVEL is valid"""
         valid_levels = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")

@@ -51,7 +51,6 @@ async def query_gemini(prompt: str) -> str:
             "Authorization": f"Bearer {GEMINI_API_KEY}",
             "Content-Type": "application/json",
         }
-        
         payload = {
             "contents": [
                 {

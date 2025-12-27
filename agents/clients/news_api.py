@@ -17,9 +17,7 @@ class NewsClient:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("NEWSAPI_KEY")
-        self.base_url = os.getenv("NEWSAPI_URL", "https://newsapi.org/v2")  # FIX: was using api_key
-        
-        # Sentiment keywords
+        self.base_url = os.getenv("NEWSAPI_URL", "https://newsapi.org/v2")
         self.positive_words = {
             'surge', 'soar', 'jump', 'rally', 'gain', 'rise', 'climb', 'advance',
             'strong', 'positive', 'bullish', 'optimistic', 'growth', 'profit',
@@ -52,45 +50,45 @@ class NewsClient:
             List of news articles with sentiment
         """
         if not self.api_key:
+            print("[NEWS API] No API key found, using fallback")
             return self._get_fallback_news(symbol, company_name)
         
         try:
-            # Calculate date range
             from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            
-            # Search query
-            query = f"{company_name} OR {symbol}"
-            
+            query = f'"{company_name}" OR "{symbol}" stock OR share'
             url = f"{self.base_url}/everything"
-            
-            headers = {
-                "Authorization": f"Bearer {self.api_key}" if self.api_key else {},
-                "Content-Type": "application/json"
-            }
             
             params = {
                 "q": query,
                 "from": from_date,
-                "sortBy": "publishedAt",
+                "sortBy": "relevancy", 
                 "language": "en",
-                "pageSize": 20
+                "pageSize": 50, 
+                "apiKey": self.api_key
             }
-            if not self.api_key:
-                params["apiKey"] = self.api_key
-            else:
-                params["apiKey"] = self.api_key 
             
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            print(f"[NEWS API] Fetching news for: {query}")
+            response = requests.get(url, params=params, timeout=10)
+            print(f"[NEWS API] Status: {response.status_code}")
             response.raise_for_status()
             
             data = response.json()
             articles = data.get("articles", [])
-            
-            # Process and add sentiment
+            print(f"[NEWS API] Found {len(articles)} articles")
             results = []
             for article in articles:
                 title = article.get("title", "")
                 description = article.get("description", "")
+                content = article.get("content", "")
+                
+                # Filter: Only keep articles that mention the company/symbol
+                full_text = f"{title} {description} {content}".lower()
+                symbol_base = symbol.replace('.NS', '').replace('.BO', '').lower()
+                
+                if (company_name.lower() not in full_text and 
+                    symbol.lower() not in full_text and
+                    symbol_base not in full_text):
+                    continue
                 
                 # Analyze sentiment
                 sentiment_data = self.analyze_sentiment_simple(f"{title} {description}")
@@ -105,10 +103,14 @@ class NewsClient:
                     "sentiment_score": sentiment_data["score"]
                 })
             
+            print(f"[NEWS API] Filtered to {len(results)} relevant articles")
             return results
             
         except requests.exceptions.RequestException as e:
-            print(f"NewsAPI error: {e}, falling back to alternative")
+            print(f"[NEWS API ERROR] {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[NEWS API ERROR] Response: {e.response.text[:200]}")
+            print("[NEWS API] Falling back to alternative news source")
             return self._get_fallback_news(symbol, company_name)
         except Exception as e:
             raise Exception(f"Failed to fetch news for {symbol}: {str(e)}")
@@ -119,16 +121,13 @@ class NewsClient:
         Used when NewsAPI is unavailable
         """
         try:
-            # Use Yahoo Finance news as fallback
             import yfinance as yf
             ticker = yf.Ticker(symbol)
             news = ticker.news
             
             results = []
-            for article in news[:10]:  # Limit to 10
+            for article in news[:10]:
                 title = article.get("title", "")
-                
-                # Simple sentiment on title
                 sentiment_data = self.analyze_sentiment_simple(title)
                 
                 results.append({
@@ -182,16 +181,12 @@ class NewsClient:
             confidence = "low"
         else:
             score = (positive_count - negative_count) / total
-            
-            # Determine sentiment
             if score > 0.3:
                 sentiment = "positive"
             elif score < -0.3:
                 sentiment = "negative"
             else:
                 sentiment = "neutral"
-            
-            # Confidence based on total keyword matches
             if total >= 5:
                 confidence = "high"
             elif total >= 2:
@@ -272,7 +267,6 @@ class NewsClient:
         Returns:
             Dictionary with overall sentiment analysis
         """
-        # Get recent news
         articles = self.get_stock_news(symbol, company_name, days=7)
         
         if not articles:
@@ -286,8 +280,6 @@ class NewsClient:
                 "total_articles": 0,
                 "summary": "No recent news available"
             }
-        
-        # Aggregate sentiments
         sentiments = [a["sentiment"] for a in articles]
         scores = [a["sentiment_score"] for a in articles]
         
@@ -358,20 +350,13 @@ class NewsClient:
         Returns:
             List of trending topics/keywords
         """
-        # Simple implementation - can be enhanced
         news = self.get_market_news(limit=20)
-        
-        # Extract common words from titles (simple approach)
         words = []
         for article in news:
             title_words = article["title"].lower().split()
             words.extend([w for w in title_words if len(w) > 4])
-        
-        # Count frequency
         from collections import Counter
         word_counts = Counter(words)
-        
-        # Return top 10
         return [word for word, count in word_counts.most_common(10)]
 
 
@@ -382,5 +367,6 @@ def get_news_client() -> NewsClient:
     """Get singleton News client instance"""
     global _news_client
     if _news_client is None:
-        _news_client = NewsClient()
+        from ..config import config
+        _news_client = NewsClient(api_key=config.NEWSAPI_KEY)
     return _news_client

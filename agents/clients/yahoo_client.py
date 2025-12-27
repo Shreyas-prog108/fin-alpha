@@ -18,7 +18,7 @@ class YahooFinanceClient:
     
     def __init__(self):
         self.cache = {}
-        self.cache_ttl = 300 
+        self.cache_ttl = 300
     
     def _get_cached(self, key: str) -> Optional[Dict]:
         """Get cached data if not expired"""
@@ -50,7 +50,6 @@ class YahooFinanceClient:
         cached = self._get_cached(cache_key)
         if cached:
             return cached
-        
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info

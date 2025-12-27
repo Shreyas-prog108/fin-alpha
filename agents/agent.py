@@ -1,8 +1,9 @@
-from langgraph.graph import StateGraph,END
+from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import Dict
+from typing import Dict, List, Tuple, Optional
 import os
 import json
+import requests
 
 from .state import AgentState
 from .config import config
@@ -24,8 +25,116 @@ class FinAgent:
         max_tokens=config.MAX_TOKENS,
         google_api_key=config.GEMINI_API_KEY
         )
-        self.llm_with_tools=self.llm.bind_tools(ALL_TOOLS)
         self.graph=self._build_graph()
+        self.ticker_cache = {}
+        
+        # Common abbreviations to full ticker mapping
+        self.abbreviation_map = {
+            "SBI": "SBIN.NS",
+            "HDFC": "HDFCBANK.NS",
+            "HDFC BANK": "HDFCBANK.NS",
+            "ICICI": "ICICIBANK.NS",
+            "ICICI BANK": "ICICIBANK.NS",
+            "IDBI": "IDBI.NS",
+            "PNB": "PNB.NS",
+            "BOB": "BANKBARODA.NS",
+            "BOI": "BANKINDIA.NS",
+            "TCS": "TCS.NS",
+            "INFY": "INFY.NS",
+            "RELIANCE": "RELIANCE.NS",
+        }
+
+    def _search_tradingview(self, company_name: str) -> Optional[str]:
+        """
+        Search using TradingView API (Primary)
+        Better for Indian stocks and global coverage
+        """
+        try:
+            url = os.getenv("TRADINGVIEW_API_URL","https://symbol-search.tradingview.com/symbol_search/")
+            params = {
+                'text': company_name,
+                'type': 'stock',
+                'exchange': '',
+                'lang': 'en'
+            }
+            
+            response = requests.get(url, params=params, timeout=5)
+            data = response.json()
+            
+            if data and len(data) > 0:
+                best_match = data[0]
+                symbol = best_match.get('symbol', '')
+                description = best_match.get('description', '')
+                exchange = best_match.get('exchange', '')
+                
+                ticker = symbol.split(':')[-1] if ':' in symbol else symbol
+                
+                if exchange in ['NSE', 'NSI']:
+                    ticker = f"{ticker}.NS"
+                elif exchange in ['BSE', 'BOM']:
+                    ticker = f"{ticker}.BO"
+                
+                print(f"[TRADINGVIEW] '{company_name}' -> {ticker} ({description})")
+                return ticker
+            
+            return None
+            
+        except Exception as e:
+            print(f"[TRADINGVIEW ERROR] {str(e)}")
+            return None
+    
+    def _search_yahoo(self, company_name: str) -> Optional[str]:
+        """
+        Search using Yahoo Finance API (Fallback)
+        """
+        try:
+            url = "https://query2.finance.yahoo.com/v1/finance/search"
+            params = {
+                'q': company_name,
+                'quotesCount': 5,
+                'newsCount': 0,
+                'enableFuzzyQuery': False,
+                'quotesQueryId': 'tss_match_phrase_query'
+            }
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            
+            response = requests.get(url, params=params, headers=headers, timeout=5)
+            data = response.json()
+            
+            quotes = data.get('quotes', [])
+            if quotes:
+                best_match = quotes[0]
+                symbol = best_match.get('symbol')
+                print(f"[YAHOO FALLBACK] '{company_name}' -> {symbol} ({best_match.get('shortname', 'N/A')})")
+                return symbol
+            
+            return None
+            
+        except Exception as e:
+            print(f"[YAHOO ERROR] {str(e)}")
+            return None
+
+    def search_ticker_symbol(self, company_name: str) -> Optional[str]:
+        """
+        Search for ticker symbol using TradingView (primary) + Yahoo Finance (fallback)
+        Returns the best matching ticker symbol or None
+        """
+        if company_name in self.ticker_cache:
+            print(f"[CACHE HIT] '{company_name}' -> {self.ticker_cache[company_name]}")
+            return self.ticker_cache[company_name]
+        
+        symbol = self._search_tradingview(company_name)
+        
+        if not symbol:
+            print(f"[FALLBACK] Trying Yahoo Finance for '{company_name}'...")
+            symbol = self._search_yahoo(company_name)
+        
+        if symbol:
+            self.ticker_cache[company_name] = symbol
+        else:
+            print(f"[SEARCH FAILED] No ticker found for '{company_name}'")
+        
+        return symbol
 
     def _build_graph(self)->StateGraph:
         """Build with Langgraph Workflow"""
@@ -45,80 +154,83 @@ class FinAgent:
         workflow.add_edge("execute_tools","synthesize")
         workflow.add_edge("synthesize","format_response")
         workflow.add_edge("format_response",END)
+        
         return workflow.compile()
 
     def parse_query_node(self,state:AgentState)->AgentState:
         """
         Node 1: Parse user query
-        Extract symbols,determine intent
+        Extract symbols,determine intent using LLM + TradingView (primary) + Yahoo Finance (fallback)
         """   
         query=state["user_query"]
-        prompt=f"""You are a financial assistant. Extract stock ticker symbols from this query:
+        prompt=f"""You are a financial assistant. Analyze this query and extract:
+1. Company/stock names mentioned
+2. Query type (price, risk, sentiment, investment_decision, news)
+3. User intent
 
-"{query}"
+Query: "{query}"
 
-Instructions:
-- Convert company names to ticker symbols:
-  * "State Bank of India" or "SBI" -> "SBIN.NS"
-  * "Reliance" -> "RELIANCE.NS"
-  * "Apple" -> "AAPL"
-- For Indian stocks, ALWAYS use .NS suffix (NSE exchange)
-- Determine query type: price, risk, sentiment, investment_decision, news
+Return ONLY valid JSON (no markdown):
+{{"company_names":["Bank of Maharashtra"],"query_type":"price","intent":"monthly performance analysis"}}
 
-Return ONLY valid JSON (no markdown, no extra text):
-{{"symbols":["SBIN.NS"],"query_type":"investment_decision","intent":"2 year investment analysis"}}
+If ticker symbols are already provided (e.g., AAPL, SBIN.NS), put them in company_names as-is.
 """
         response=self.llm.invoke(prompt)
         import re
         import json
-        
-        # Try to parse LLM response as JSON
         try:
             content = response.content
-            
-            # Handle if content is a list (some LLM responses)
             if isinstance(content, list):
-                # Extract text from list of dicts
                 text_parts = []
                 for item in content:
                     if isinstance(item, dict):
                         text_parts.append(item.get('text', str(item)))
                     else:
-                        text_parts.append(str(item))
-                content = ' '.join(text_parts)
+                        text_parts.append(str(item))            
+            content = ' '.join(text_parts)
             
-            print(f"\n[DEBUG] LLM Response: {content[:200]}...")  # Debug output
+            json_match = re.search(r'\{[^\{\}]*"company_names"[^\{\}]*\}', content, re.DOTALL)
             
-            # Try to extract JSON - look for curly braces
-            json_match = re.search(r'\{[^\{\}]*"symbols"[^\{\}]*\}', content, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 parsed = json.loads(json_str)
-                state["symbols"] = parsed.get("symbols", ["AAPL"])
+                company_names = parsed.get("company_names", [])
                 state["query_type"] = parsed.get("query_type", "investment_decision")
                 state["intent"] = parsed.get("intent", query)
-                print(f"[DEBUG] Parsed symbols: {state['symbols']}")  # Debug output
+                
+                resolved_symbols = []
+                for name in company_names:
+                    # Check abbreviation map first
+                    name_upper = name.upper()
+                    if name_upper in self.abbreviation_map:
+                        resolved_symbols.append(self.abbreviation_map[name_upper])
+                        print(f"[ABBREVIATION] '{name}' -> {self.abbreviation_map[name_upper]}")
+                    elif re.match(r'^[A-Z]{1,5}(?:\.[A-Z]{1,3})?$', name_upper):
+                        resolved_symbols.append(name_upper)
+                        print(f"[TICKER] Using provided symbol: {name_upper}")
+                    else:
+                        symbol = self.search_ticker_symbol(name)
+                        if symbol:
+                            resolved_symbols.append(symbol)
+                        else:
+                            print(f"[WARNING] Could not resolve '{name}', skipping")
+                
+                state["symbols"] = resolved_symbols if resolved_symbols else ["AAPL"]
+                
             else:
-                print("[DEBUG] No JSON found, using fallback...")  # Debug output
-                # Fallback: check for common Indian company names
-                query_lower = query.lower()
-                if "state bank" in query_lower or "sbi" in query_lower:
-                    state["symbols"] = ["SBIN.NS"]
-                elif "reliance" in query_lower:
-                    state["symbols"] = ["RELIANCE.NS"]
-                elif "tcs" in query_lower or "tata consultancy" in query_lower:
-                    state["symbols"] = ["TCS.NS"]
-                elif "infosys" in query_lower:
-                    state["symbols"] = ["INFY.NS"]
+                symbol = self.search_ticker_symbol(query)
+                if symbol:
+                    state["symbols"] = [symbol]
                 else:
-                    # Try to extract ticker symbols from query
                     symbols = re.findall(r'\b[A-Z]{2,5}(?:\.(?:NS|BO))?\b', query.upper())
                     state["symbols"] = symbols if symbols else ["AAPL"]
+                
+                state["query_type"] = "investment_decision"
+                state["intent"] = query
                 
                 state["query_type"] = "sentiment" if "sentiment" in query.lower() else "investment_decision"
                 state["intent"] = query
         except Exception as e:
-            print(f"[DEBUG] Error parsing: {e}")  # Debug output
             state["symbols"] = ["AAPL"]
             state["query_type"] = "investment_decision"
             state["intent"] = query
@@ -131,8 +243,11 @@ Return ONLY valid JSON (no markdown, no extra text):
         Node 2: Plan which tools to use
         Based on query type, decide tool sequence
         """
-        query_type=state["query_type"]   
-        if query_type=="price":
+        query_type=state["query_type"]
+        symbols = state["symbols"]
+        if len(symbols) > 1 and query_type == "investment_decision":
+            state["tools_to_use"]=["compare_stocks"]
+        elif query_type=="price":
             state["tools_to_use"]=["get_stock_price", "get_stock_news"]
         elif query_type=="risk":
             state["tools_to_use"]=["get_analyze_risk", "get_stock_info", "get_stock_news", "analyze_news_sentiment"]
@@ -158,46 +273,45 @@ Return ONLY valid JSON (no markdown, no extra text):
     async def execute_tools_node(self, state: AgentState) -> AgentState:
         """Node 3: Execute tools"""
         tools_to_use = state["tools_to_use"]
-        symbol = state["symbols"][0] if state["symbols"] else "AAPL"
+        symbols = state["symbols"] if state["symbols"] else ["AAPL"]
         results = {}
-        
-        print(f"\n[DEBUG] Executing {len(tools_to_use)} tools for {symbol}...")  # Debug output
-        
-        # Extract company name from symbol (remove .NS, .BO suffixes)
-        company_name = symbol.replace('.NS', '').replace('.BO', '')
-        
-        # Map symbol to full company name for better news results
-        symbol_to_name = {
-            "SBIN": "State Bank of India",
-            "RELIANCE": "Reliance Industries",
-            "TCS": "Tata Consultancy Services",
-            "INFY": "Infosys",
-            "HDFCBANK": "HDFC Bank",
-            "ICICIBANK": "ICICI Bank",
-            "AAPL": "Apple Inc"
-        }
-        full_company_name = symbol_to_name.get(company_name, company_name)
-        
-        for tool_name in tools_to_use:
+        if "compare_stocks" in tools_to_use:
             try:
-                tool = next((t for t in ALL_TOOLS if t.name == tool_name), None)
+                tool = next((t for t in ALL_TOOLS if t.name == "compare_stocks"), None)
                 if tool:
-                    print(f"[DEBUG] Running tool: {tool_name}")
-                    if tool_name in ["get_stock_news", "analyze_news_sentiment"]:
-                        result = await tool.ainvoke({
-                            "symbol": symbol,
-                            "company_name": full_company_name
-                        })
-                    else:
-                        result = await tool.ainvoke({"symbol": symbol})
-                    
-                    results[tool_name] = result
-                    print(f"[DEBUG] Tool {tool_name} completed")
-                else:
-                    print(f"[DEBUG] Tool {tool_name} not found in ALL_TOOLS")
+                    result = await tool.ainvoke({"symbols": symbols})
+                    results["compare_stocks"] = result
             except Exception as e:
-                print(f"[DEBUG] Tool {tool_name} error: {e}")
-                results[tool_name] = {"error": str(e)}
+                results["compare_stocks"] = {"error": str(e)}
+        else:
+            symbol = symbols[0]
+            company_name = symbol.replace('.NS', '').replace('.BO', '')
+            symbol_to_name = {
+                "SBIN": "State Bank of India",
+                "RELIANCE": "Reliance Industries",
+                "TCS": "Tata Consultancy Services",
+                "INFY": "Infosys",
+                "HDFCBANK": "HDFC Bank",
+                "ICICIBANK": "ICICI Bank",
+                "AAPL": "Apple Inc"
+            }
+            full_company_name = symbol_to_name.get(company_name, company_name)
+            
+            for tool_name in tools_to_use:
+                try:
+                    tool = next((t for t in ALL_TOOLS if t.name == tool_name), None)
+                    if tool:
+                        if tool_name in ["get_stock_news", "analyze_news_sentiment"]:
+                            result = await tool.ainvoke({
+                                "symbol": symbol,
+                                "company_name": full_company_name
+                            })
+                        else:
+                            result = await tool.ainvoke({"symbol": symbol})
+                        
+                        results[tool_name] = result
+                except Exception as e:
+                    results[tool_name] = {"error": str(e)}
         
         state["tool_results"] = results
         state["step_count"] += 1
@@ -221,27 +335,55 @@ Return ONLY valid JSON (no markdown, no extra text):
         news_data = parsed_results.get("get_stock_news", {})
         sentiment_data = parsed_results.get("analyze_news_sentiment", {})
         
-        print(f"\n[DEBUG] News data keys: {list(news_data.keys()) if isinstance(news_data, dict) else 'Not a dict'}")
-        if isinstance(news_data, dict) and 'error' in news_data:
-            print(f"[DEBUG] News API error: {news_data['error']}")
-        print(f"[DEBUG] Sentiment data keys: {list(sentiment_data.keys()) if isinstance(sentiment_data, dict) else 'Not a dict'}")
-        if isinstance(sentiment_data, dict) and 'error' in sentiment_data:
-            print(f"[DEBUG] Sentiment API error: {sentiment_data['error']}")
+        news_articles = []
+        if isinstance(news_data, list):
+            for article in news_data[:5]:
+                if isinstance(article, dict):
+                    news_articles.append({
+                        'title': article.get('title', 'N/A'),
+                        'url': article.get('url', ''),
+                        'source': article.get('source', 'Unknown'),
+                        'sentiment': article.get('sentiment', 'neutral')
+                    })
         
         prompt = f"""You are a financial analyst. Analyze the following data for {symbol}:
 
 Query Type: {query_type}
-Tool Results:
-{json.dumps(tool_results, indent=2)}
 
-IMPORTANT: Your analysis MUST include:
-1. 3-5 key insights (bullet points)
-2. Clear recommendation: BUY, HOLD, or SELL
-3. Confidence level: high, medium, or low
-4. Detailed reasoning (2-3 sentences) that EXPLICITLY references specific news headlines or events from the news data
-5. If news data is available, cite specific headlines that support your recommendation
+Financial Data:
+{json.dumps(parsed_results, indent=2)}
 
-Format your response with clear sections and include news references in your reasoning."""
+News Articles (WITH LINKS):
+{json.dumps(news_articles, indent=2)}
+
+CRITICAL REQUIREMENTS - YOU MUST INCLUDE ALL OF THESE:
+
+1. **Key Insights** (3-5 bullet points with specific numbers from the data)
+
+2. **Recommendation**: BUY, HOLD, or SELL with confidence level (high/medium/low)
+
+3. **Detailed Reasoning** (2-3 sentences):
+   - Reference SPECIFIC financial metrics (price, volatility, P/E ratio, etc.)
+   - Mention sentiment analysis results
+   - Cite at least 2 news events
+
+4. **Supporting News References** (MANDATORY - MUST INCLUDE 3-5):
+   Format each as:
+   • [Headline] - Source
+     Link: [URL]
+     Relevance: [1 sentence explaining how this supports your recommendation]
+
+Example format:
+📰 **Supporting News & Reports:**
+• ICICI Bank reports strong Q3 earnings - Economic Times
+  Link: https://example.com/article1
+  Relevance: Strong earnings support bullish outlook
+
+• RBI maintains interest rates - Reuters
+  Link: https://example.com/article2
+  Relevance: Stable rates benefit banking sector profitability
+
+IMPORTANT: You MUST include actual URLs from the news_articles data above. Do not skip the news references section."""
         
         response=self.llm.invoke(prompt)
         content=response.content
@@ -262,8 +404,6 @@ Format your response with clear sections and include news references in your rea
             state["confidence"] = "low"
         else:
             state["confidence"] = "medium"
-        
-        # Extract insights - look for bullet points or numbered items
         insights = []
         for line in content.split('\n'):
             line = line.strip()
@@ -272,24 +412,17 @@ Format your response with clear sections and include news references in your rea
         
         state["insights"] = insights if insights else [content[:200] + "..."]
         state["full_analysis"] = content
-        
-        # Store news references separately for better formatting
-        # Handle different possible structures from news API
         headlines = []
-        if isinstance(news_data, dict):
-            headlines = news_data.get("headlines", news_data.get("articles", news_data.get("news", [])))
-        
-        # Extract sentiment info
+        if isinstance(news_data, list):
+            headlines = news_data[:5]
         sentiment = "neutral"
         sentiment_score = 0.0
         if isinstance(sentiment_data, dict):
             sentiment = sentiment_data.get("overall_sentiment", sentiment_data.get("sentiment", "neutral"))
             sentiment_score = sentiment_data.get("score", sentiment_data.get("sentiment_score", 0.0))
         
-        print(f"[DEBUG] Extracted {len(headlines) if isinstance(headlines, list) else 0} headlines")
-        
         state["news_references"] = {
-            "headlines": headlines[:3] if isinstance(headlines, list) else [],  # Top 3 only
+            "headlines": headlines[:3] if isinstance(headlines, list) else [], 
             "sentiment": sentiment,
             "sentiment_score": sentiment_score
         }
@@ -306,9 +439,7 @@ Format your response with clear sections and include news references in your rea
         recommendation=state["recommendation"]  
         confidence=state["confidence"]
         full_analysis = state.get("full_analysis", "")
-        news_refs = state.get("news_references", {})
-        
-        # Format news references section
+        news_refs = state.get("news_references", {})        
         news_section = ""
         if news_refs:
             headlines = news_refs.get("headlines", [])
@@ -379,6 +510,8 @@ Format your response with clear sections and include news references in your rea
             "insights":[],
             "recommendation":None,
             "confidence":"",
+            "full_analysis":"",
+            "news_references":{},
             "should_continue":True,
             "error":None,
             "step_count":0            

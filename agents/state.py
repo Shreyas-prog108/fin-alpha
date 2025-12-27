@@ -1,6 +1,6 @@
 from typing import TypedDict, List, Dict, Optional, Literal
 
-class AgentState(TypedDict):
+class AgentState(TypedDict,total=False):
     messages: List[Dict]
     user_query: str 
     
@@ -22,7 +22,9 @@ class AgentState(TypedDict):
     # Analysis
     insights: List[str]              
     recommendation: Optional[str]    
-    confidence: str                
+    confidence: str
+    full_analysis: str
+    news_references: Dict
     
     # Metadata
     should_continue: bool            
