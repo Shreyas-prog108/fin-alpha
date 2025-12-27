@@ -95,7 +95,7 @@ async def get_market_maker_quote(symbol:str,risk_aversion:float = 0.1)->str:
 def get_stock_news(symbol:str,company_name:str)->str:
     """Get comprehensive News of Stock"""
     try:
-        result=yahoo.get_stock_news(symbol,company_name,days=7)
+        result=news.get_news(company_name, days=7)
         return json.dumps(result,indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -105,7 +105,7 @@ def get_stock_news(symbol:str,company_name:str)->str:
 def analyze_news_sentiment(symbol:str,company_name:str)->str:
     """analyze the sentiment of market for company"""
     try:
-        result=yahoo.analyze_news_sentiment(symbol,company_name)
+        result=news.analyze_sentiment(company_name)
         return json.dumps(result,indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})

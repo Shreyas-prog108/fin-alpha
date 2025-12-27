@@ -10,9 +10,9 @@ from typing import Dict
 TOOL_DESCRIPTIONS: Dict[str, str] = {
     "get_stock_price": "Get current price, market cap, P/E ratio. Use for: price queries, basic info.",
     "get_stock_info": "Get detailed financials, ratios, company info. Use for: fundamental analysis.",
-    "get_historical_data": "Fetch price/volume history. Use for: trend analysis, charts.",
+    "get_hist_data": "Fetch price/volume history. Use for: trend analysis, charts.",
     "get_financial_metrics": "Get profitability, valuation, health metrics. Use for: financial health check.",
-    "analyze_stock_risk": "Calculate volatility, risk level, anomalies. Use for: risk assessment. Returns: volatility, risk_level (low/medium/high).",
+    "get_analyze_risk": "Calculate volatility, risk level, anomalies. Use for: risk assessment. Returns: volatility, risk_level (low/medium/high).",
     "predict_stock_price": "Predict next price using EMA or linear regression. Use for: price forecasts. Returns: predicted_price, change_percent, confidence.",
     "get_market_maker_quote": "Calculate optimal bid/ask using Avellaneda-Stoikov. Use for: market making, fair pricing.",
     "get_stock_news": "Fetch recent news articles. Use for: news context, before sentiment.",

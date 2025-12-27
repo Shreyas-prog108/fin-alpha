@@ -1,5 +1,13 @@
 import asyncio
-from .agent import FinAgent
+import sys
+from pathlib import Path
+
+if __name__ == "__main__":
+    project_root = Path(__file__).parent.parent
+    sys.path.insert(0, str(project_root))
+    from agents.agent import FinAgent
+else:
+    from .agent import FinAgent
 async def main():
     agent = FinAgent()
     print("🤖 FinAgent - Financial Analysis Agent")

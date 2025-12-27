@@ -1,23 +1,25 @@
-# Environment files
-.env
-.env.local
-
-# Virtual environment
-venv/
+# Python
 __pycache__/
+*.py[cod]
+*.pyc
+venv/
+.venv/
+.env.local
+.env
 
-# Backup files
-backup.py
+# Environment
+.env
 
-# Instance folder (database files)
-instance/
-
-# IDE files
+# IDE
 .vscode/
 .idea/
 *.swp
-*.swo
 
-# OS files
+# Data
+data/cache/*
+data/logs/*
+
+# OS
 .DS_Store
-Thumbs.db
+app.py
+backup.py

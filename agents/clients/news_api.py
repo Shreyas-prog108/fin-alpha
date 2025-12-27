@@ -17,7 +17,7 @@ class NewsClient:
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("NEWSAPI_KEY")
-        self.base_url = api_key or os.getenv("NEWSAPI_URL")
+        self.base_url = os.getenv("NEWSAPI_URL", "https://newsapi.org/v2")  # FIX: was using api_key
         
         # Sentiment keywords
         self.positive_words = {
@@ -61,18 +61,26 @@ class NewsClient:
             # Search query
             query = f"{company_name} OR {symbol}"
             
-            # API request
             url = f"{self.base_url}/everything"
+            
+            headers = {
+                "Authorization": f"Bearer {self.api_key}" if self.api_key else {},
+                "Content-Type": "application/json"
+            }
+            
             params = {
                 "q": query,
                 "from": from_date,
                 "sortBy": "publishedAt",
                 "language": "en",
-                "apiKey": self.api_key,
                 "pageSize": 20
             }
+            if not self.api_key:
+                params["apiKey"] = self.api_key
+            else:
+                params["apiKey"] = self.api_key 
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=10)
             response.raise_for_status()
             
             data = response.json()

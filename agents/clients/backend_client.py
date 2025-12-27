@@ -14,10 +14,19 @@ class BackendClient:
     Calls quantitative analysis endpoints
     """
     
-    def __init__(self, base_url: Optional[str] = None):
-        self.base_url = base_url or os.getenv("BACKEND_URL", "http://localhost:8000")
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
+        self.base_url = base_url or os.getenv("BACKEND_URL")
+        self.api_key = api_key or os.getenv("API_KEY")
         self.timeout = 30.0
         self._client = None
+        
+        # Validate base_url
+        if not self.base_url:
+            raise ValueError("BACKEND_URL environment variable must be set")
+        
+        # Ensure HTTPS in production
+        if not self.base_url.startswith(("http://", "https://")):
+            raise ValueError("BACKEND_URL must start with http:// or https://")
     
     @property
     def client(self) -> httpx.AsyncClient:
@@ -31,6 +40,13 @@ class BackendClient:
         if self._client:
             await self._client.aclose()
     
+    def _get_headers(self) -> Dict:
+        """Get request headers with authentication"""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+    
     async def health_check(self) -> Dict:
         """
         Check if backend is running
@@ -42,7 +58,10 @@ class BackendClient:
             Exception: If backend is unreachable
         """
         try:
-            response = await self.client.get(f"{self.base_url}/api/v1/health")
+            response = await self.client.get(
+                f"{self.base_url}/api/health",
+                headers=self._get_headers()
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
@@ -78,8 +97,9 @@ class BackendClient:
             }
             
             response = await self.client.post(
-                f"{self.base_url}/api/v1/risk/analyze",
-                json=payload
+                f"{self.base_url}/api/analyze-risk",
+                json=payload,
+                headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -129,8 +149,9 @@ class BackendClient:
             }
             
             response = await self.client.post(
-                f"{self.base_url}/api/v1/prediction/predict",
-                json=payload
+                f"{self.base_url}/api/predict-price",
+                json=payload,
+                headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -184,8 +205,9 @@ class BackendClient:
             }
             
             response = await self.client.post(
-                f"{self.base_url}/api/v1/market-maker/quote",
-                json=payload
+                f"{self.base_url}/api/market-maker/quote",
+                json=payload,
+                headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -202,7 +224,8 @@ class BackendClient:
         """
         try:
             response = await self.client.get(
-                f"{self.base_url}/api/v1/prediction/methods"
+                f"{self.base_url}/api/prediction/methods",
+                headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -218,7 +241,8 @@ class BackendClient:
         """
         try:
             response = await self.client.get(
-                f"{self.base_url}/api/v1/risk/levels"
+                f"{self.base_url}/api/risk/levels",
+                headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
@@ -235,17 +259,19 @@ class BackendClient:
         try:
             await self.health_check()
             return True
-        except:
+        except (httpx.HTTPError, OSError, ValueError):
             return False
     
     def __del__(self):
         """Cleanup on deletion"""
+        # SECURITY FIX: Don't use asyncio.create_task in __del__
+        # Just log and let the client be garbage collected
         if self._client:
-            try:
-                import asyncio
-                asyncio.create_task(self._client.aclose())
-            except:
-                pass
+            import warnings
+            warnings.warn(
+                "BackendClient was not properly closed. Use 'async with' or call close().",
+                ResourceWarning
+            )
 
 
 # Singleton instance
