@@ -80,8 +80,6 @@ class NewsClient:
                 title = article.get("title", "")
                 description = article.get("description", "")
                 content = article.get("content", "")
-                
-                # Filter: Only keep articles that mention the company/symbol
                 full_text = f"{title} {description} {content}".lower()
                 symbol_base = symbol.replace('.NS', '').replace('.BO', '').lower()
                 
@@ -89,8 +87,6 @@ class NewsClient:
                     symbol.lower() not in full_text and
                     symbol_base not in full_text):
                     continue
-                
-                # Analyze sentiment
                 sentiment_data = self.analyze_sentiment_simple(f"{title} {description}")
                 
                 results.append({
@@ -145,7 +141,6 @@ class NewsClient:
             return results
             
         except Exception as e:
-            # If all fails, return empty list
             print(f"Fallback news also failed: {e}")
             return []
     
@@ -168,12 +163,8 @@ class NewsClient:
         
         text_lower = text.lower()
         words = set(text_lower.split())
-        
-        # Count positive and negative words
         positive_count = len(words.intersection(self.positive_words))
         negative_count = len(words.intersection(self.negative_words))
-        
-        # Calculate score (-1 to +1)
         total = positive_count + negative_count
         if total == 0:
             score = 0.0
@@ -286,19 +277,13 @@ class NewsClient:
         positive_count = sentiments.count("positive")
         negative_count = sentiments.count("negative")
         neutral_count = sentiments.count("neutral")
-        
-        # Calculate overall score
         avg_score = sum(scores) / len(scores) if scores else 0.0
-        
-        # Determine overall sentiment
         if avg_score > 0.2:
             overall = "positive"
         elif avg_score < -0.2:
             overall = "negative"
         else:
             overall = "neutral"
-        
-        # Confidence based on article count and agreement
         if len(articles) >= 10:
             if max(positive_count, negative_count, neutral_count) / len(articles) > 0.6:
                 confidence = "high"
@@ -308,8 +293,6 @@ class NewsClient:
             confidence = "medium"
         else:
             confidence = "low"
-        
-        # Generate summary
         summary = self._generate_sentiment_summary(
             overall, positive_count, negative_count, neutral_count
         )

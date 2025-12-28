@@ -251,6 +251,74 @@ class BackendClient:
         except (httpx.HTTPError, OSError, ValueError):
             return False
     
+    async def analyze_chart(self, symbol: str, data: List[Dict]) -> Dict:
+        """
+        Analyze stock chart data using Gemini AI
+        
+        Args:
+            symbol: Stock ticker symbol
+            data: Historical OHLCV data with format:
+                  [{"time": "2025-01-01", "open": 150.0, "high": 152.0, 
+                    "low": 149.0, "close": 151.0, "volume": 50000}, ...]
+        
+        Returns:
+            Dictionary with chart analysis:
+            {
+                "analysis": "Technical analysis text from AI"
+            }
+        
+        Raises:
+            Exception: If API call fails
+        """
+        try:
+            payload = {
+                "symbol": symbol,
+                "data": data
+            }
+            
+            response = await self.client.post(
+                f"{self.base_url}/api/analyze-chart",
+                json=payload,
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPError as e:
+            raise Exception(f"Chart analysis API error: {str(e)}")
+    
+    async def summarize_news(self, articles: List[str]) -> Dict:
+        """
+        Summarize news articles using Gemini AI
+        
+        Args:
+            articles: List of news article texts
+        
+        Returns:
+            Dictionary with summary:
+            {
+                "summary": "AI-generated summary of articles"
+            }
+        
+        Raises:
+            Exception: If API call fails
+        """
+        try:
+            payload = {
+                "articles": articles
+            }
+            
+            response = await self.client.post(
+                f"{self.base_url}/api/summarize-news",
+                json=payload,
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPError as e:
+            raise Exception(f"News summarization API error: {str(e)}")
+    
     def __del__(self):
         """Cleanup on deletion"""
         if self._client:

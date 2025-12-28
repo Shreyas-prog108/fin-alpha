@@ -99,8 +99,6 @@ class YahooFinanceClient:
                 "industry": info.get("industry", "Unknown"),
                 "website": info.get("website", ""),
                 "employees": info.get("fullTimeEmployees", 0),
-                
-                # Valuation
                 "market_cap": info.get("marketCap", 0),
                 "enterprise_value": info.get("enterpriseValue", 0),
                 "pe_ratio": info.get("trailingPE", 0),
@@ -108,25 +106,17 @@ class YahooFinanceClient:
                 "peg_ratio": info.get("pegRatio", 0),
                 "price_to_book": info.get("priceToBook", 0),
                 "price_to_sales": info.get("priceToSalesTrailing12Months", 0),
-                
-                # Profitability
                 "profit_margin": info.get("profitMargins", 0),
                 "operating_margin": info.get("operatingMargins", 0),
                 "roe": info.get("returnOnEquity", 0),
                 "roa": info.get("returnOnAssets", 0),
-                
-                # Financial Health
                 "total_revenue": info.get("totalRevenue", 0),
                 "revenue_growth": info.get("revenueGrowth", 0),
                 "earnings_growth": info.get("earningsGrowth", 0),
                 "debt_to_equity": info.get("debtToEquity", 0),
                 "current_ratio": info.get("currentRatio", 0),
-                
-                # Dividends
                 "dividend_yield": info.get("dividendYield", 0),
                 "payout_ratio": info.get("payoutRatio", 0),
-                
-                # Trading
                 "beta": info.get("beta", 0),
                 "52_week_high": info.get("fiftyTwoWeekHigh", 0),
                 "52_week_low": info.get("fiftyTwoWeekLow", 0),
@@ -198,43 +188,29 @@ class YahooFinanceClient:
             
             result = {
                 "symbol": symbol.upper(),
-                
-                # Profitability Metrics
-                "profit_margin": info.get("profitMargins", 0) * 100,  # Convert to percentage
+                "profit_margin": info.get("profitMargins", 0) * 100,
                 "operating_margin": info.get("operatingMargins", 0) * 100,
                 "roe": info.get("returnOnEquity", 0) * 100,
                 "roa": info.get("returnOnAssets", 0) * 100,
                 "roic": info.get("returnOnCapital", 0) * 100,
-                
-                # Valuation Ratios
                 "pe_ratio": info.get("trailingPE", 0),
                 "forward_pe": info.get("forwardPE", 0),
                 "peg_ratio": info.get("pegRatio", 0),
                 "price_to_book": info.get("priceToBook", 0),
                 "price_to_sales": info.get("priceToSalesTrailing12Months", 0),
                 "ev_to_ebitda": info.get("enterpriseToEbitda", 0),
-                
-                # Financial Health
                 "debt_to_equity": info.get("debtToEquity", 0),
                 "current_ratio": info.get("currentRatio", 0),
                 "quick_ratio": info.get("quickRatio", 0),
                 "interest_coverage": info.get("interestCoverage", 0),
-                
-                # Growth Metrics
                 "revenue_growth": info.get("revenueGrowth", 0) * 100,
                 "earnings_growth": info.get("earningsGrowth", 0) * 100,
                 "eps_growth": info.get("earningsQuarterlyGrowth", 0) * 100,
-                
-                # Efficiency Ratios
                 "asset_turnover": info.get("assetTurnover", 0),
                 "inventory_turnover": info.get("inventoryTurnover", 0),
-                
-                # Per Share Metrics
                 "earnings_per_share": info.get("trailingEps", 0),
                 "book_value_per_share": info.get("bookValue", 0),
                 "revenue_per_share": info.get("revenuePerShare", 0),
-                
-                # Cash Flow
                 "operating_cash_flow": info.get("operatingCashflow", 0),
                 "free_cash_flow": info.get("freeCashflow", 0),
             }
@@ -261,17 +237,11 @@ class YahooFinanceClient:
             
             if len(hist_data) < 2:
                 return 0.0
-            
-            # Extract close prices
             closes = [d["close"] for d in hist_data]
-            
-            # Calculate daily returns
             returns = [(closes[i] - closes[i-1]) / closes[i-1] 
                       for i in range(1, len(closes))]
-            
-            # Calculate volatility (annualized)
             daily_volatility = np.std(returns)
-            annualized_volatility = daily_volatility * np.sqrt(252)  # 252 trading days
+            annualized_volatility = daily_volatility * np.sqrt(252) 
             
             return float(annualized_volatility)
             

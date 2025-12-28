@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 #CONFIG - SECURITY VALIDATED
 #=========================
 GEMINI_API_VERSION=os.getenv("GEMINI_API_VERSION", "v1beta")
-GEMINI_MODEL=os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_MODEL=os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_API_KEY=os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     logger.warning("GEMINI_API_KEY not set - Gemini features will be unavailable")

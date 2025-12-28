@@ -191,6 +191,45 @@ def calculate_portfolio_metrics(holdings: List[Dict]) -> str:
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
+
+#TOOL-13:ANALYZE-CHART
+@tool
+async def analyze_chart(symbol:str)->str:
+    """Analyze stock chart patterns and technical signals using AI"""
+    try:
+        hist_data=yahoo.get_historical_data(symbol,"1mo")
+        data_for_backend=[{
+                "time": d["date"],
+                "open": d["open"],
+                "high": d["high"],
+                "low": d["low"],
+                "close": d["close"],
+                "volume": d["volume"]
+            }
+            for d in hist_data
+        ]
+        result=await backend.analyze_chart(symbol,data_for_backend)
+        return json.dumps(result,indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+#TOOL-14:SUMMARIZE-NEWS
+@tool
+async def summarize_news_articles(symbol:str,company_name:str)->str:
+    """Get AI-powered summary of recent news articles"""
+    try:
+        articles_data=news.get_stock_news(symbol, company_name, days=7)
+        if not articles_data:
+            return json.dumps({"summary": "No recent news available"})
+        article_texts = []
+        for article in articles_data[:10]: 
+            text = f"{article.get('title', '')}\n{article.get('description', '')}"
+            article_texts.append(text)
+        
+        result=await backend.summarize_news(article_texts)
+        return json.dumps(result,indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
     
 #TOOL-LIST
 ALL_TOOLS=[
@@ -205,6 +244,8 @@ ALL_TOOLS=[
     get_market_news,
     compare_stocks,
     get_financial_metrics,
-    calculate_portfolio_metrics
+    calculate_portfolio_metrics,
+    analyze_chart,
+    summarize_news_articles
 ]
     

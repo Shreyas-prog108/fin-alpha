@@ -44,14 +44,12 @@ from backend.price_prediction import predict_price
 
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app with security configs
 app = FastAPI(
     title="fin-alpha - Financial Market Analysis API",
     description="Secure Market Analysis & Prediction Service",
@@ -64,7 +62,7 @@ app = FastAPI(
 # SECURITY MIDDLEWARE
 # =============================
 
-# 1. Add CORS middleware with strict configuration
+# 1.CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in ALLOWED_ORIGINS if origin.strip()],
@@ -74,7 +72,7 @@ app.add_middleware(
     max_age=3600,
 )
 
-# 2. Add trusted host middleware (prevents Host header attacks)
+# 2.middleware
 allowed_hosts = [origin.split("://")[-1] for origin in ALLOWED_ORIGINS if origin.strip()]
 allowed_hosts.extend(["localhost", "127.0.0.1", "localhost:8000", "127.0.0.1:8000"])
 app.add_middleware(
@@ -82,29 +80,17 @@ app.add_middleware(
     allowed_hosts=allowed_hosts
 )
 
-# 3. Add security headers middleware
+# 3.security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses"""
     response = await call_next(request)
-    
-    # Prevent content type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
-    
-    # Prevent clickjacking
     response.headers["X-Frame-Options"] = "DENY"
-    
-    # XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    
-    # HSTS (only in production with HTTPS)
     if REQUIRE_HTTPS:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    
-    # CSP (Content Security Policy)
     response.headers["Content-Security-Policy"] = "default-src 'self'"
-    
-    # Referrer policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     
     return response
@@ -179,8 +165,6 @@ async def list_gemini_models(api_key: str = Depends(verify_api_key)):
     
     try:
         url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models"
-        
-        # SECURITY FIX: Use Authorization header instead of URL parameters
         headers = {
             "Authorization": f"Bearer {GEMINI_API_KEY}",
             "Content-Type": "application/json"
