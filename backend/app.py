@@ -37,10 +37,12 @@ from backend.models import (
     PredictionRequest,
     RiskAnalysisRequest,
     MarketMakerRequest,
+    GeminiQueryRequest,
 )
 from backend.risk_analysis import analyze_risk
 from backend.market_maker import market_maker_quote
 from backend.price_prediction import predict_price
+from backend.gemini_helper import query_gemini
 
 load_dotenv()
 
@@ -190,6 +192,28 @@ async def list_gemini_models(api_key: str = Depends(verify_api_key)):
         )
     except Exception as e:
         logger.exception(f"Unexpected error in list_gemini_models: {type(e).__name__}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@app.post("/api/gemini-query")
+async def gemini_query(
+    request: GeminiQueryRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Proxy a prompt to Gemini via backend helper
+    Requires: Authorization: Bearer <API_KEY>
+    """
+    try:
+        response_text = await query_gemini(request.prompt)
+        return {"response": response_text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected error in gemini_query: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"

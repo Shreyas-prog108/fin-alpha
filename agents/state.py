@@ -6,12 +6,17 @@ class AgentState(TypedDict,total=False):
     
     # Query Analysis
     symbols: List[str]     
+    symbol_metadata: Dict[str, Dict]
     query_type: str   
     intent: str                   
+    time_frame: str
+    sentiment_focus: str
+    news_category: str
     
     # Tool Execution
     tools_to_use: List[str]          
     tool_results: Dict[str, any]    
+    prefetch_results: Dict[str, any]
     
     # Data Collection
     market_data: Dict                
@@ -25,6 +30,7 @@ class AgentState(TypedDict,total=False):
     confidence: str
     full_analysis: str
     news_references: Dict
+    agent_reports: Dict[str, str]
     
     # Metadata
     should_continue: bool            

@@ -1,17 +1,22 @@
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from typing import Dict, List, Tuple, Optional
-import os
 import json
-import requests
 
 from .state import AgentState
 from .config import config
 from .tools import ALL_TOOLS
+from .clients import get_tradingview_client, get_backend_client
 from .prompts import (
     MAIN_AGENT_SYSTEM_PROMPT,
     TOOL_SELECTION_GUIDE,
     SYNTHESIS_PROMPT,
+)
+from .prompts.subagent_prompts import (
+    MARKET_DATA_AGENT_PROMPT,
+    RISK_AGENT_PROMPT,
+    SENTIMENT_AGENT_PROMPT,
+    PREDICTION_AGENT_PROMPT
 )
 
 class FinAgent:
@@ -27,142 +32,227 @@ class FinAgent:
         )
         self.graph=self._build_graph()
         self.ticker_cache = {}
-        self.abbreviation_map = {
-            "SBI": "SBIN.NS",
-            "HDFC": "HDFCBANK.NS",
-            "ICICI": "ICICIBANK.NS",
-            "BOB": "BANKBARODA.NS",
-            "PNB": "PNB.NS",
-            "TCS": "TCS.NS",
-            "INFY": "INFY.NS",
-        }
+        self.symbol_metadata_cache = {}
+        self.tradingview = get_tradingview_client()
+        self.backend = get_backend_client()
 
-    def _search_tradingview(self, company_name: str) -> Optional[str]:
-        """
-        Search using TradingView API (Primary)
-        Better for Indian stocks and global coverage
-        """
+    def _normalize_timeframe(self, timeframe: Optional[str]) -> str:
+        allowed = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}
+        if not timeframe:
+            return "1mo"
+        tf = timeframe.strip().lower()
+        if tf in allowed:
+            return tf
+        mapping = {
+            "today": "1d",
+            "day": "1d",
+            "daily": "1d",
+            "week": "5d",
+            "weekly": "5d",
+            "month": "1mo",
+            "monthly": "1mo",
+            "quarter": "3mo",
+            "3 months": "3mo",
+            "six months": "6mo",
+            "6 months": "6mo",
+            "half year": "6mo",
+            "year": "1y",
+            "yearly": "1y",
+            "2 years": "2y",
+            "5 years": "5y",
+            "long term": "5y",
+            "all": "max",
+            "all time": "max"
+        }
+        return mapping.get(tf, "1mo")
+
+    def _normalize_sentiment_focus(self, sentiment: Optional[str]) -> str:
+        if not sentiment:
+            return "unknown"
+        s = sentiment.strip().lower()
+        if s in ["bullish", "positive"]:
+            return "positive"
+        if s in ["bearish", "negative"]:
+            return "negative"
+        if s in ["neutral", "mixed"]:
+            return s
+        return "unknown"
+
+    def _normalize_news_category(self, category: Optional[str]) -> str:
+        if not category:
+            return "general"
+        c = category.strip().lower()
+        if c in ["general", "all", "any"]:
+            return "general"
+        return c
+
+    def _infer_timeframe_from_query(
+        self,
+        query: str,
+        intent: str,
+        sentiment_focus: str
+    ) -> str:
+        prompt = f"""You are a financial assistant. Infer the most appropriate Yahoo period
+for historical analysis based on the user's sentiment and intent.
+
+User Query: "{query}"
+Intent: "{intent}"
+Sentiment Focus: "{sentiment_focus}"
+
+Return ONLY one of: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
+
+Guidance:
+- Urgent/short-term concern or high volatility focus -> 1d or 5d
+- Mixed/neutral sentiment with general analysis -> 1mo
+- Long-term investment/growth focus -> 6mo to 1y
+- Very long-term/retirement -> 2y or 5y
+"""
         try:
-            url = os.getenv("TRADINGVIEW_API_URL","https://symbol-search.tradingview.com/symbol_search/")
-            params = {
-                'text': company_name,
-                'type': 'stock',
-                'exchange': '',
-                'lang': 'en'
+            response = self.llm.invoke(prompt)
+            content = response.content
+            if isinstance(content, list):
+                content = " ".join(str(item) for item in content)
+            if not isinstance(content, str):
+                content = str(content)
+            candidate = content.strip().lower()
+            allowed = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}
+            if candidate in allowed:
+                return candidate
+        except Exception as e:
+            print(f"[TIMEFRAME INFER ERROR] {str(e)}")
+
+        return "1mo"
+
+    def _timeframe_to_days(self, timeframe: str) -> int:
+        mapping = {
+            "1d": 1,
+            "5d": 5,
+            "1mo": 30,
+            "3mo": 90,
+            "6mo": 180,
+            "1y": 365,
+            "2y": 730,
+            "5y": 1825,
+            "max": 1825
+        }
+        return mapping.get(timeframe, 30)
+
+    def _get_company_name(
+        self,
+        symbol: str,
+        symbol_metadata: Optional[Dict[str, Dict]] = None
+    ) -> str:
+        if symbol_metadata and symbol in symbol_metadata:
+            name = symbol_metadata[symbol].get("name")
+            if name:
+                return name
+        cached = self.symbol_metadata_cache.get(symbol, {})
+        if cached.get("name"):
+            return cached["name"]
+        return symbol.replace(".NS", "").replace(".BO", "")
+
+    def _apply_exchange_suffix(self, ticker: str, exchange: str) -> str:
+        if not ticker:
+            return ""
+        if "." in ticker:
+            return ticker.upper()
+        exchange_upper = (exchange or "").upper()
+        if exchange_upper in ["NSE", "NSI"]:
+            return f"{ticker.upper()}.NS"
+        if exchange_upper in ["BSE", "BOM"]:
+            return f"{ticker.upper()}.BO"
+        return ticker.upper()
+
+    def _looks_like_ticker(self, value: str) -> bool:
+        import re
+        if not value:
+            return False
+        return bool(re.match(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$", value.upper()))
+
+    def _parse_tool_result(self, result: object) -> Dict:
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except Exception:
+                return {"raw": result}
+        if isinstance(result, dict):
+            return result
+        return {"raw": result}
+
+    def _resolve_symbol_from_tradingview(self, query: str) -> Tuple[Optional[str], Dict]:
+        try:
+            result = self.tradingview.search_symbol(query)
+            if not result:
+                return None, {}
+            ticker = result.get("ticker", "")
+            exchange = result.get("exchange", "")
+            description = result.get("description", "") or query
+            symbol = self._apply_exchange_suffix(ticker, exchange)
+            metadata = {
+                "name": description,
+                "exchange": exchange,
+                "source": "tradingview"
             }
-            
-            response = requests.get(url, params=params, timeout=5)
-            data = response.json()
-            
-            if data and len(data) > 0:
-                best_match = data[0]
-                symbol = best_match.get('symbol', '')
-                description = best_match.get('description', '')
-                exchange = best_match.get('exchange', '')
-                
-                ticker = symbol.split(':')[-1] if ':' in symbol else symbol
-                
-                if exchange in ['NSE', 'NSI']:
-                    ticker = f"{ticker}.NS"
-                elif exchange in ['BSE', 'BOM']:
-                    ticker = f"{ticker}.BO"
-                
-                print(f"[TRADINGVIEW] '{company_name}' -> {ticker} ({description})")
-                return ticker
-            
-            return None
-            
+            return symbol, metadata
         except Exception as e:
             print(f"[TRADINGVIEW ERROR] {str(e)}")
-            return None
-    
-    def _search_yahoo(self, company_name: str) -> Optional[str]:
-        """
-        Search using Yahoo Finance API with smart search variations
-        """
-        try:
-            search_query = company_name.strip()
-            if not any(ex in search_query.upper() for ex in ['.NS', '.BO', 'NASDAQ', 'NYSE']):
-                search_variations = [
-                    search_query,
-                    f"{search_query} NSE",
-                    f"{search_query} India",
-                ]
-            else:
-                search_variations = [search_query]
-            
-            for query in search_variations:
-                url = "https://query2.finance.yahoo.com/v1/finance/search"
-                params = {
-                    'q': query,
-                    'quotesCount': 5,
-                    'newsCount': 0,
-                    'enableFuzzyQuery': True, 
-                    'quotesQueryId': 'tss_match_phrase_query'
-                }
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                
-                response = requests.get(url, params=params, headers=headers, timeout=5)
-                data = response.json()
-                
-                quotes = data.get('quotes', [])
-                if quotes:
-                    indian_quotes = [q for q in quotes if '.NS' in q.get('symbol', '') or '.BO' in q.get('symbol', '')]
-                    best_match = indian_quotes[0] if indian_quotes else quotes[0]
-                    
-                    symbol = best_match.get('symbol')
-                    name = best_match.get('shortname', best_match.get('longname', ''))
-                    print(f"[YAHOO] '{company_name}' -> {symbol} ({name})")
-                    return symbol
-            
-            return None
-            
-        except Exception as e:
-            print(f"[YAHOO ERROR] {str(e)}")
-            return None
+            return None, {}
 
-    def search_ticker_symbol(self, company_name: str) -> Optional[str]:
+    def resolve_symbol(self, query: str) -> Tuple[Optional[str], Dict]:
         """
-        Search for ticker symbol using Yahoo (primary) + TradingView (fallback)
-        Returns the best matching ticker symbol or None
+        Resolve a symbol from a company name or ticker using TradingView.
+        Returns (symbol, metadata) or (None, {}).
         """
-        if company_name in self.ticker_cache:
-            print(f"[CACHE HIT] '{company_name}' -> {self.ticker_cache[company_name]}")
-            return self.ticker_cache[company_name]
-        symbol = self._search_yahoo(company_name)
-        if not symbol:
-            print(f"[FALLBACK] Trying TradingView for '{company_name}'...")
-            symbol = self._search_tradingview(company_name)
-        
+        query_clean = query.strip()
+        if not query_clean:
+            return None, {}
+        if query_clean in self.ticker_cache:
+            symbol = self.ticker_cache[query_clean]
+            return symbol, self.symbol_metadata_cache.get(symbol, {})
+
+        symbol, metadata = self._resolve_symbol_from_tradingview(query_clean)
         if symbol:
-            self.ticker_cache[company_name] = symbol
-        else:
-            print(f"[SEARCH FAILED] No ticker found for '{company_name}'")
-        
-        return symbol
+            print(f"[TRADINGVIEW] '{query_clean}' -> {symbol} ({metadata.get('name', '')})")
+            self.ticker_cache[query_clean] = symbol
+            if metadata:
+                self.symbol_metadata_cache[symbol] = metadata
+            return symbol, metadata
+
+        if self._looks_like_ticker(query_clean):
+            symbol = query_clean.upper()
+            metadata = {"name": query_clean.upper(), "exchange": "", "source": "input"}
+            self.symbol_metadata_cache[symbol] = metadata
+            return symbol, metadata
+
+        print(f"[SEARCH FAILED] No symbol found for '{query_clean}'")
+        return None, {}
 
     def _build_graph(self)->StateGraph:
         """Build with Langgraph Workflow"""
 
         #nodes
         workflow=StateGraph(AgentState)
-        workflow.add_node("parse_query",self.parse_query_node)
-        workflow.add_node("plan_analysis",self.plan_analysis_node)
-        workflow.add_node("execute_tools",self.execute_tools_node)
-        workflow.add_node("synthesize",self.synthesize_node)
-        workflow.add_node("format_response",self.format_response_node)
+        workflow.add_node("parse_query", self.parse_query_node)
+        workflow.add_node("prefetch_context", self.prefetch_context_node)
+        workflow.add_node("plan_analysis", self.plan_analysis_node)
+        workflow.add_node("execute_tools", self.execute_tools_node)
+        workflow.add_node("run_subagents", self.run_subagents_node)
+        workflow.add_node("synthesize", self.synthesize_node)
+        workflow.add_node("format_response", self.format_response_node)
 
         #edges
         workflow.set_entry_point("parse_query")
-        workflow.add_edge("parse_query","plan_analysis")
-        workflow.add_edge("plan_analysis","execute_tools")
-        workflow.add_edge("execute_tools","synthesize")
-        workflow.add_edge("synthesize","format_response")
-        workflow.add_edge("format_response",END)
+        workflow.add_edge("parse_query", "prefetch_context")
+        workflow.add_edge("prefetch_context", "plan_analysis")
+        workflow.add_edge("plan_analysis", "execute_tools")
+        workflow.add_edge("execute_tools", "run_subagents")
+        workflow.add_edge("run_subagents", "synthesize")
+        workflow.add_edge("synthesize", "format_response")
+        workflow.add_edge("format_response", END)
         
         return workflow.compile()
 
-    def parse_query_node(self,state:AgentState)->AgentState:
+    async def parse_query_node(self,state:AgentState)->AgentState:
         """
         Node 1: Parse user query
         Extract company names and use AI-powered search to find correct ticker symbols
@@ -172,11 +262,14 @@ class FinAgent:
 1. Company/stock names mentioned (use BRAND NAMES, not legal names)
 2. Query type (price, risk, sentiment, investment_decision, news)
 3. User intent
+4. Time frame as a Yahoo period string: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
+5. Sentiment focus for the query (positive, negative, neutral, mixed, or unknown)
+6. News category/angle if mentioned (e.g., earnings, product, regulatory, merger, guidance, dividend, macro, analyst_ratings, legal, sector, general)
 
 Query: "{query}"
 
 Return ONLY valid JSON (no markdown):
-{{"company_names":["Bank of Maharashtra"],"query_type":"price","intent":"monthly performance analysis"}}
+{{"company_names":["Bank of Maharashtra"],"query_type":"price","intent":"monthly performance analysis","time_frame":"1mo","sentiment_focus":"neutral","news_category":"general"}}
 
 IMPORTANT RULES:
 - Use BRAND NAMES: "Nykaa" not "FSN E-Commerce Ventures Ltd."
@@ -185,13 +278,21 @@ IMPORTANT RULES:
 - For typos (e.g., "nykka"), correct to proper brand name (e.g., "Nykaa")
 - Do NOT add .NS or .BO suffix - just the brand name
 - If user provides ticker with suffix (e.g., SBIN.NS), keep it as-is
+- If no explicit time frame, infer the period using sentiment and intent
+- If no category, use general
+- If sentiment is not clear, use unknown
 """
-        response=self.llm.invoke(prompt)
+        try:
+            response_payload = await self.backend.query_gemini(prompt)
+            content = response_payload.get("response", "")
+        except Exception as e:
+            print(f"[GEMINI BACKEND ERROR] {str(e)}")
+            response = self.llm.invoke(prompt)
+            content = response.content
         import re
         import json
         
         try:
-            content = response.content
             if isinstance(content, list):
                 text_parts = []
                 for item in content:
@@ -209,59 +310,75 @@ IMPORTANT RULES:
                 company_names = parsed.get("company_names", [])
                 state["query_type"] = parsed.get("query_type", "investment_decision")
                 state["intent"] = parsed.get("intent", query)
+                state["sentiment_focus"] = self._normalize_sentiment_focus(
+                    parsed.get("sentiment_focus")
+                )
+                state["news_category"] = self._normalize_news_category(
+                    parsed.get("news_category")
+                )
+                raw_time_frame = parsed.get("time_frame")
+                if raw_time_frame:
+                    state["time_frame"] = self._normalize_timeframe(raw_time_frame)
+                else:
+                    state["time_frame"] = self._infer_timeframe_from_query(
+                        query, state["intent"], state["sentiment_focus"]
+                    )
                 resolved_symbols = []
+                symbol_metadata = {}
                 for name in company_names:
-                    name_upper = name.upper()
-                    is_ticker_with_exchange = '.' in name_upper  
-                    is_short_us_ticker = re.match(r'^[A-Z]{1,4}$', name_upper) and not name_upper in ['NYKAA', 'PAYTM', 'ZOMATO']  # Short US tickers
-                    is_known_ticker = name_upper in self.abbreviation_map
-                    
-                    if is_ticker_with_exchange or is_known_ticker:
-                        if is_known_ticker:
-                            resolved_symbols.append(self.abbreviation_map[name_upper])
-                            print(f"[ABBREVIATION] '{name}' -> {self.abbreviation_map[name_upper]}")
-                        else:
-                            resolved_symbols.append(name_upper)
-                            print(f"[TICKER] Using provided symbol: {name_upper}")
+                    print(f"[SEARCH] Resolving symbol for: {name}")
+                    symbol, metadata = self.resolve_symbol(name)
+                    if not symbol:
+                        symbol, metadata = self.resolve_symbol(f"{name} India")
+                    if symbol:
+                        resolved_symbols.append(symbol)
+                        if metadata:
+                            symbol_metadata[symbol] = metadata
+                        print(f"[RESOLVED] '{name}' -> {symbol}")
                     else:
-                        print(f"[SEARCH] Looking up ticker for: {name}")
-                        symbol = self.search_ticker_symbol(name)
-                        if symbol:
-                            resolved_symbols.append(symbol)
-                            print(f"[RESOLVED] '{name}' -> {symbol}")
-                        else:
-                            print(f"[WARNING] Could not resolve '{name}', trying fallback...")
-                            fallback_symbol = self.search_ticker_symbol(f"{name} India")
-                            if fallback_symbol:
-                                resolved_symbols.append(fallback_symbol)
-                                print(f"[FALLBACK] '{name}' -> {fallback_symbol}")
-                            else:
-                                print(f"[ERROR] Failed to find ticker for '{name}'")
+                        print(f"[ERROR] Failed to resolve '{name}'")
                 if not resolved_symbols:
                     print(f"[FALLBACK] No symbols found, trying to search entire query...")
-                    symbol = self.search_ticker_symbol(query)
+                    symbol, metadata = self.resolve_symbol(query)
                     state["symbols"] = [symbol] if symbol else ["AAPL"]
+                    if symbol and metadata:
+                        symbol_metadata[symbol] = metadata
                 else:
                     state["symbols"] = resolved_symbols
+                state["symbol_metadata"] = symbol_metadata
                 
             else:
                 print(f"[FALLBACK] Could not parse JSON, searching query directly...")
-                symbol = self.search_ticker_symbol(query)
+                symbol, metadata = self.resolve_symbol(query)
                 if symbol:
                     state["symbols"] = [symbol]
+                    if metadata:
+                        state["symbol_metadata"] = {symbol: metadata}
                 else:
                     symbols = re.findall(r'\b[A-Z]{2,5}(?:\.(?:NS|BO))?\b', query.upper())
                     state["symbols"] = symbols if symbols else ["AAPL"]
                 
                 state["query_type"] = "sentiment" if "sentiment" in query.lower() else "investment_decision"
                 state["intent"] = query
+                state["sentiment_focus"] = self._normalize_sentiment_focus(None)
+                state["news_category"] = self._normalize_news_category(None)
+                state["time_frame"] = self._infer_timeframe_from_query(
+                    query, state["intent"], state["sentiment_focus"]
+                )
                 
         except Exception as e:
             print(f"[ERROR] Parse error: {e}")
-            symbol = self.search_ticker_symbol(query)
+            symbol, metadata = self.resolve_symbol(query)
             state["symbols"] = [symbol] if symbol else ["AAPL"]
+            if symbol and metadata:
+                state["symbol_metadata"] = {symbol: metadata}
             state["query_type"] = "investment_decision"
             state["intent"] = query
+            state["sentiment_focus"] = self._normalize_sentiment_focus(None)
+            state["news_category"] = self._normalize_news_category(None)
+            state["time_frame"] = self._infer_timeframe_from_query(
+                query, state["intent"], state["sentiment_focus"]
+            )
         
         print(f"\n[FINAL] Resolved symbols: {state['symbols']}")
         print(f"[FINAL] Query type: {state['query_type']}\n")
@@ -269,98 +386,49 @@ IMPORTANT RULES:
         state["step_count"]=1 
         return state
 
+    def prefetch_context_node(self, state: AgentState) -> AgentState:
+        """
+        Node 2: Prefetch core market data and news (TradingView + News)
+        """
+        symbols = state.get("symbols", [])
+        symbol = symbols[0] if symbols else "AAPL"
+
+        prefetch_results = {}
+        try:
+            prefetch_results["tradingview"] = self.tradingview.get_current_price(symbol)
+        except Exception as e:
+            prefetch_results["tradingview_error"] = str(e)
+
+        state["prefetch_results"] = prefetch_results
+        state["step_count"] += 1
+        return state
+
     def plan_analysis_node(self,state:AgentState)->AgentState:
         """
-        Node 2: LLM-powered analysis planning
-        Let AI decide which tools to use based on the query
+        Node 3: Prepare tools list (execute all tools)
         """
-        query = state["user_query"]
-        intent = state.get("intent", query)
         symbols = state["symbols"]
         if len(symbols) > 1:
             state["tools_to_use"] = ["compare_stocks"]
-            state["step_count"] += 1
-            return state
-        prompt = f"""You are a financial analysis planner. Based on the user's query, select the most relevant tools to gather information.
-
-User Query: "{query}"
-Intent: "{intent}"
-Stock Symbol: {symbols[0] if symbols else "Unknown"}
-
-Available Tools:
-1. get_stock_price - Get current price, market cap, P/E ratio
-2. get_financial_metrics - Get profitability, valuation ratios, growth metrics
-3. get_analyze_risk - Calculate volatility, VaR, risk scoring
-4. predict_price - Predict future price using EMA/Linear regression
-5. analyze_chart - AI analysis of chart patterns and technical signals
-6. get_stock_news - Fetch recent news articles
-7. analyze_news_sentiment - Analyze sentiment of news (positive/negative/neutral)
-8. summarize_news_articles - AI-generated summary of all news
-
-Select 3-8 tools that would be most useful for this query.
-
-Return ONLY a JSON array of tool names (no markdown, no explanation):
-["get_stock_price", "get_financial_metrics", "get_stock_news"]
-
-Guidelines:
-- Always include get_stock_price for basic info
-- For investment decisions: include financial_metrics, risk, prediction, chart, news, sentiment
-- For price queries: include price, chart, news
-- For risk queries: include risk, financial_metrics, chart
-- For sentiment queries: include news, sentiment, summarize_news_articles
-- For news queries: include news, sentiment, summarize_news_articles
-"""
-        
-        try:
-            response = self.llm.invoke(prompt)
-            content = response.content
-            
-            if isinstance(content, list):
-                content = " ".join(str(item) for item in content)
-            import re
-            json_match = re.search(r'\[([^\[\]]*)\]', content)
-            if json_match:
-                json_str = f"[{json_match.group(1)}]"
-                tools = json.loads(json_str)
-                valid_tools = [
-                    "get_stock_price", "get_financial_metrics", "get_analyze_risk",
-                    "predict_price", "analyze_chart", "get_stock_news",
-                    "analyze_news_sentiment", "summarize_news_articles"
-                ]
-                
-                selected_tools = [t for t in tools if t in valid_tools]
-                
-                if selected_tools:
-                    state["tools_to_use"] = selected_tools
-                    print(f"\n[AI PLANNER] Selected {len(selected_tools)} tools: {', '.join(selected_tools)}\n")
-                else:
-                    state["tools_to_use"] = ["get_stock_price", "get_stock_news"]
-                    print("[AI PLANNER] Using fallback tools")
-            else:
-                state["tools_to_use"] = ["get_stock_price", "get_stock_news"]
-                print("[AI PLANNER] JSON parse failed, using fallback tools")
-                
-        except Exception as e:
-            print(f"[AI PLANNER ERROR] {str(e)}")
+        else:
             state["tools_to_use"] = [
                 "get_stock_price",
-                "get_financial_metrics",
-                "get_analyze_risk",
-                "predict_price",
-                "analyze_chart",
-                "get_stock_news",
-                "analyze_news_sentiment",
-                "summarize_news_articles"
+                "get_stock_info"
             ]
-        
+
         state["step_count"] += 1
         return state
     
     async def execute_tools_node(self, state: AgentState) -> AgentState:
-        """Node 3: Execute tools"""
+        """Node 4: Execute tools"""
         tools_to_use = state["tools_to_use"]
         symbols = state["symbols"] if state["symbols"] else ["AAPL"]
         results = {}
+        prefetch = state.get("prefetch_results", {})
+        timeframe = self._normalize_timeframe(state.get("time_frame"))
+        category = self._normalize_news_category(state.get("news_category"))
+        days = self._timeframe_to_days(timeframe)
+
         if "compare_stocks" in tools_to_use:
             try:
                 tool = next((t for t in ALL_TOOLS if t.name == "compare_stocks"), None)
@@ -369,55 +437,144 @@ Guidelines:
                     results["compare_stocks"] = result
             except Exception as e:
                 results["compare_stocks"] = {"error": str(e)}
+
+            if "get_market_news" in tools_to_use:
+                try:
+                    tool = next((t for t in ALL_TOOLS if t.name == "get_market_news"), None)
+                    if tool:
+                        results["get_market_news"] = await tool.ainvoke({"limit": 10})
+                except Exception as e:
+                    results["get_market_news"] = {"error": str(e)}
         else:
             symbol = symbols[0]
-            company_name = symbol.replace('.NS', '').replace('.BO', '')
-            symbol_to_name = {
-                "SBIN": "State Bank of India",
-                "RELIANCE": "Reliance Industries",
-                "TCS": "Tata Consultancy Services",
-                "INFY": "Infosys",
-                "HDFCBANK": "HDFC Bank",
-                "ICICIBANK": "ICICI Bank",
-                "AAPL": "Apple Inc"
-            }
-            full_company_name = symbol_to_name.get(company_name, company_name)
-            
+            company_name = self._get_company_name(
+                symbol, state.get("symbol_metadata", {})
+            )
+
             for tool_name in tools_to_use:
                 try:
                     tool = next((t for t in ALL_TOOLS if t.name == tool_name), None)
-                    if tool:
-                        if tool_name in ["get_stock_news", "analyze_news_sentiment", "summarize_news_articles"]:
-                            result = await tool.ainvoke({
-                                "symbol": symbol,
-                                "company_name": full_company_name
-                            })
-                        else:
-                            result = await tool.ainvoke({"symbol": symbol})
-                        
-                        results[tool_name] = result
+                    if not tool:
+                        continue
+
+                    if tool_name in ["get_stock_news", "analyze_news_sentiment", "summarize_news_articles"]:
+                        result = await tool.ainvoke({
+                            "symbol": symbol,
+                            "company_name": company_name,
+                            "days": days,
+                            "category": category
+                        })
+                    elif tool_name in ["get_hist_data", "get_analyze_risk", "predict_price", "analyze_chart"]:
+                        result = await tool.ainvoke({
+                            "symbol": symbol,
+                            "period": timeframe
+                        })
+                    elif tool_name == "get_market_news":
+                        result = await tool.ainvoke({"limit": 10})
+                    else:
+                        result = await tool.ainvoke({"symbol": symbol})
+
+                    results[tool_name] = result
                 except Exception as e:
-                    results[tool_name] = {"error": str(e)}
-        
+                    if tool_name == "get_stock_price" and prefetch.get("tradingview"):
+                        results[tool_name] = json.dumps(prefetch["tradingview"], indent=2)
+                    elif tool_name == "get_stock_news" and prefetch.get("news"):
+                        results[tool_name] = json.dumps(prefetch["news"], indent=2)
+                    else:
+                        results[tool_name] = {"error": str(e)}
+
         state["tool_results"] = results
         state["step_count"] += 1
         return state
     
+    def run_subagents_node(self, state: AgentState) -> AgentState:
+        """
+        Node 5: Run specialized sub-agent analyses
+        """
+        tool_results = state.get("tool_results", {})
+        symbol = state["symbols"][0] if state.get("symbols") else "Unknown"
+        timeframe = self._normalize_timeframe(state.get("time_frame"))
+        sentiment_focus = self._normalize_sentiment_focus(state.get("sentiment_focus"))
+        news_category = self._normalize_news_category(state.get("news_category"))
+
+        parsed_results = {
+            name: self._parse_tool_result(result)
+            for name, result in tool_results.items()
+        }
+
+        hist_data = parsed_results.get("get_hist_data", [])
+        if isinstance(hist_data, list) and len(hist_data) > 20:
+            hist_data = hist_data[-20:]
+
+        agent_inputs = {
+            "market_data": {
+                "price": parsed_results.get("get_stock_price", {}),
+                "info": parsed_results.get("get_stock_info", {}),
+                "metrics": parsed_results.get("get_financial_metrics", {})
+            },
+            "risk": {
+                "risk": parsed_results.get("get_analyze_risk", {}),
+                "market_maker_quote": parsed_results.get("get_market_maker_quote", {})
+            },
+            "sentiment": {
+                "news": parsed_results.get("get_stock_news", []),
+                "sentiment": parsed_results.get("analyze_news_sentiment", {}),
+                "news_summary": parsed_results.get("summarize_news_articles", {})
+            },
+            "prediction": {
+                "prediction": parsed_results.get("predict_price", {}),
+                "chart": parsed_results.get("analyze_chart", {}),
+                "recent_history": hist_data
+            }
+        }
+
+        subagent_prompts = {
+            "market_data": MARKET_DATA_AGENT_PROMPT,
+            "risk": RISK_AGENT_PROMPT,
+            "sentiment": SENTIMENT_AGENT_PROMPT,
+            "prediction": PREDICTION_AGENT_PROMPT
+        }
+
+        reports = {}
+        for agent_name, prompt in subagent_prompts.items():
+            data_blob = json.dumps(agent_inputs.get(agent_name, {}), indent=2)
+            agent_prompt = f"""{prompt.strip()}
+
+Symbol: {symbol}
+Time Frame: {timeframe}
+Sentiment Focus: {sentiment_focus}
+News Category: {news_category}
+
+Data:
+{data_blob}
+
+Return concise bullet points (3-5) with actionable insights."""
+            response = self.llm.invoke(agent_prompt)
+            content = response.content
+            if isinstance(content, list):
+                content = " ".join(str(item) for item in content)
+            elif not isinstance(content, str):
+                content = str(content)
+            reports[agent_name] = content.strip()
+
+        state["agent_reports"] = reports
+        state["step_count"] += 1
+        return state
+
     def synthesize_node(self, state: AgentState) -> AgentState:
-        """Node 4: Synthesize results"""
+        """Node 6: Synthesize results"""
         import json
         tool_results = state["tool_results"]
         symbol = state["symbols"][0] if state["symbols"] else "Unknown"
         query_type = state["query_type"]
-        parsed_results = {}
-        for tool_name, result in tool_results.items():
-            if isinstance(result, str):
-                try:
-                    parsed_results[tool_name] = json.loads(result)
-                except:
-                    parsed_results[tool_name] = {"raw": result}
-            else:
-                parsed_results[tool_name] = result
+        timeframe = self._normalize_timeframe(state.get("time_frame"))
+        sentiment_focus = self._normalize_sentiment_focus(state.get("sentiment_focus"))
+        news_category = self._normalize_news_category(state.get("news_category"))
+        agent_reports = state.get("agent_reports", {})
+        parsed_results = {
+            tool_name: self._parse_tool_result(result)
+            for tool_name, result in tool_results.items()
+        }
         news_data = parsed_results.get("get_stock_news", {})
         sentiment_data = parsed_results.get("analyze_news_sentiment", {})
         
@@ -435,14 +592,20 @@ Guidelines:
         prompt = f"""You are a financial analyst. Analyze the following data for {symbol}:
 
 Query Type: {query_type}
+Time Frame: {timeframe}
+Sentiment Focus: {sentiment_focus}
+News Category: {news_category}
 
 Financial Data:
 {json.dumps(parsed_results, indent=2)}
 
+Sub-Agent Reports:
+{json.dumps(agent_reports, indent=2)}
+
 News Articles (WITH LINKS):
 {json.dumps(news_articles, indent=2)}
 
-CRITICAL REQUIREMENTS - YOU MUST INCLUDE ALL OF THESE:
+CRITICAL REQUIREMENTS:
 
 1. **Key Insights** (3-5 bullet points with specific numbers from the data)
    - USE CORRECT CURRENCY SYMBOL based on stock exchange:
@@ -457,29 +620,18 @@ CRITICAL REQUIREMENTS - YOU MUST INCLUDE ALL OF THESE:
 
 3. **Detailed Reasoning** (2-3 sentences):
    - Reference SPECIFIC financial metrics (price, volatility, P/E ratio, etc.) with CORRECT CURRENCY
-   - Mention sentiment analysis results
-   - Cite at least 2 news events
+   - Mention sentiment analysis results if available
+   - Cite news events if available
 
-4. **Supporting News References** (MANDATORY - MUST INCLUDE 3-5):
-   Format each as:
-   • [Headline] - Source
-     Link: [URL]
-     Relevance: [1 sentence explaining how this supports your recommendation]
+4. **Supporting News References** (ONLY IF NEWS PROVIDED):
+   - If news_articles is empty, explicitly state "No news data available."
+   - If provided, include 3-5 references in this format:
+     • [Headline] - Source
+       Link: [URL]
+       Relevance: [1 sentence explaining how this supports your recommendation]
 
-Example format:
-📰 **Supporting News & Reports:**
-• ICICI Bank reports strong Q3 earnings - Economic Times
-  Link: https://example.com/article1
-  Relevance: Strong earnings support bullish outlook
-
-• RBI maintains interest rates - Reuters
-  Link: https://example.com/article2
-  Relevance: Stable rates benefit banking sector profitability
-
-IMPORTANT: 
-- Always use the CORRECT currency symbol in all monetary values
-- You MUST include actual URLs from the news_articles data above
-- Do not skip the news references section"""
+IMPORTANT:
+- Always use the CORRECT currency symbol in all monetary values"""
         
         response=self.llm.invoke(prompt)
         content=response.content
@@ -528,15 +680,19 @@ IMPORTANT:
     
     def format_response_node(self,state:AgentState)->AgentState:
         """
-        Node 5: Format final response with comprehensive data display
+        Node 7: Format final response with comprehensive data display
         """
         import json
         symbol=state["symbols"][0] if state["symbols"] else "Unknown"
         recommendation=state["recommendation"]  
         confidence=state["confidence"]
         full_analysis = state.get("full_analysis", "")
+        timeframe = self._normalize_timeframe(state.get("time_frame"))
+        sentiment_focus = self._normalize_sentiment_focus(state.get("sentiment_focus"))
+        news_category = self._normalize_news_category(state.get("news_category"))
         tool_results = state.get("tool_results", {})
         news_refs = state.get("news_references", {})
+        agent_reports = state.get("agent_reports", {})
         detailed_sections = []
         price_data = tool_results.get("get_stock_price", {})
         if isinstance(price_data, str):
@@ -695,10 +851,31 @@ IMPORTANT:
                     else:
                         news_section += f"{i}. {headline}\n"
         detailed_data = "\n".join(detailed_sections) if detailed_sections else "\n*Detailed financial data unavailable.*\n"
+        subagent_section = ""
+        if agent_reports:
+            title_map = {
+                "market_data": "Market Data Agent",
+                "risk": "Risk Agent",
+                "sentiment": "Sentiment Agent",
+                "prediction": "Prediction Agent"
+            }
+            subagent_section += "\n\n## 🧠 Sub-Agent Insights\n"
+            for key in ["market_data", "risk", "sentiment", "prediction"]:
+                report = agent_reports.get(key)
+                if report:
+                    subagent_section += f"\n### {title_map.get(key, key.title())}\n{report}\n"
         
         response=f"""📊 **Comprehensive Analysis for {symbol}**
 
 **Recommendation:** {recommendation} (Confidence: {confidence.upper()})
+
+---
+
+## 🧭 Query Context
+
+- **Time Frame:** {timeframe}
+- **Sentiment Focus:** {sentiment_focus}
+- **News Category:** {news_category}
 
 ---
 
@@ -707,6 +884,8 @@ IMPORTANT:
 {full_analysis}
 
 ---
+
+{subagent_section}
 
 ## 📋 Detailed Financial Data
 {detailed_data}
@@ -737,10 +916,15 @@ IMPORTANT:
             "messages":[{"role": "user", "content": query}],
             "user_query":query,
             "symbols":[],
+            "symbol_metadata":{},
             "query_type":"",
             "intent":"",
+            "time_frame":"1mo",
+            "sentiment_focus":"unknown",
+            "news_category":"general",
             "tools_to_use":[],
             "tool_results":{},
+            "prefetch_results":{},
             "market_data":{},
             "risk_analysis":{},
             "news_sentiment":{},
@@ -750,6 +934,7 @@ IMPORTANT:
             "confidence":"",
             "full_analysis":"",
             "news_references":{},
+            "agent_reports":{},
             "should_continue":True,
             "error":None,
             "step_count":0            

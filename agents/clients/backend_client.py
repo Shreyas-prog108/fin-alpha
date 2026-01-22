@@ -318,6 +318,28 @@ class BackendClient:
             
         except httpx.HTTPError as e:
             raise Exception(f"News summarization API error: {str(e)}")
+
+    async def query_gemini(self, prompt: str) -> Dict:
+        """
+        Query Gemini via backend helper
+        
+        Args:
+            prompt: Prompt string
+        
+        Returns:
+            Dictionary with response text
+        """
+        try:
+            payload = {"prompt": prompt}
+            response = await self.client.post(
+                f"{self.base_url}/api/gemini-query",
+                json=payload,
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise Exception(f"Gemini query API error: {str(e)}")
     
     def __del__(self):
         """Cleanup on deletion"""

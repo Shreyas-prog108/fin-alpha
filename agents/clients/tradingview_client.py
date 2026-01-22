@@ -55,7 +55,12 @@ class TradingViewClient:
             }
             
             response = requests.get(self.search_url, params=params, timeout=5)
-            data = response.json()
+            if response.status_code != 200:
+                raise Exception(f"Search API returned status {response.status_code}")
+            try:
+                data = response.json()
+            except ValueError as e:
+                raise Exception(f"Invalid JSON response: {str(e)}")
             
             if data and len(data) > 0:
                 best_match = data[0]
@@ -154,7 +159,7 @@ class TradingViewClient:
     def get_current_price(self, symbol: str) -> Dict:
         """
         Get current stock price and basic information
-        Auto-detects exchange from symbol format (e.g., SBIN.NS -> NSE)
+        Uses TradingView search to resolve exchange and ticker
         
         Args:
             symbol: Stock ticker with optional exchange suffix (e.g., "AAPL", "SBIN.NS")
@@ -162,26 +167,15 @@ class TradingViewClient:
         Returns:
             Dictionary with current price, market cap, P/E ratio, etc.
         """
-        exchange = "NASDAQ"
-        clean_symbol = symbol
+        search_result = self.search_symbol(symbol)
+        if search_result:
+            exch = search_result.get('exchange', '')
+            tick = search_result.get('ticker', '')
+            if not exch or not tick:
+                raise Exception("Search result missing exchange or ticker")
+            return self.get_quote(tick, exch)
         
-        if ".NS" in symbol:
-            exchange = "NSE"
-            clean_symbol = symbol.replace(".NS", "")
-        elif ".BO" in symbol:
-            exchange = "BSE"
-            clean_symbol = symbol.replace(".BO", "")
-        
-        try:
-            return self.get_quote(clean_symbol, exchange)
-        except Exception as e:
-            print(f"[TRADINGVIEW] Failed with exchange {exchange}, falling back to search...")
-            search_result = self.search_symbol(symbol)
-            if search_result:
-                exch = search_result['exchange']
-                tick = search_result['ticker']
-                return self.get_quote(tick, exch)
-            raise e
+        raise Exception(f"Unable to resolve exchange for symbol '{symbol}'")
     
     def get_technical_indicators(self, symbol: str, exchange: str = "NSE") -> Dict:
         """

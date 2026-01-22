@@ -33,10 +33,11 @@ class NewsClient:
         }
     
     def get_stock_news(
-        self, 
-        symbol: str, 
+        self,
+        symbol: str,
         company_name: str,
-        days: int = 7
+        days: int = 7,
+        category: Optional[str] = None
     ) -> List[Dict]:
         """
         Get recent news articles about a stock
@@ -51,11 +52,15 @@ class NewsClient:
         """
         if not self.api_key:
             print("[NEWS API] No API key found, using fallback")
-            return self._get_fallback_news(symbol, company_name)
+            return self._get_fallback_news(symbol, company_name, category=category)
         
         try:
             from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            query = f'"{company_name}" OR "{symbol}" stock OR share'
+            base_query = f'"{company_name}" OR "{symbol}" OR "{symbol} stock" OR "{symbol} share"'
+            if category and category.lower() not in ["general", "all", "any"]:
+                query = f'({base_query}) AND "{category}"'
+            else:
+                query = base_query
             url = f"{self.base_url}/everything"
             
             params = {
@@ -107,11 +112,16 @@ class NewsClient:
             if hasattr(e, 'response') and e.response is not None:
                 print(f"[NEWS API ERROR] Response: {e.response.text[:200]}")
             print("[NEWS API] Falling back to alternative news source")
-            return self._get_fallback_news(symbol, company_name)
+            return self._get_fallback_news(symbol, company_name, category=category)
         except Exception as e:
             raise Exception(f"Failed to fetch news for {symbol}: {str(e)}")
     
-    def _get_fallback_news(self, symbol: str, company_name: str) -> List[Dict]:
+    def _get_fallback_news(
+        self,
+        symbol: str,
+        company_name: str,
+        category: Optional[str] = None
+    ) -> List[Dict]:
         """
         Fallback news source (Yahoo Finance RSS or web scraping)
         Used when NewsAPI is unavailable
@@ -122,13 +132,19 @@ class NewsClient:
             news = ticker.news
             
             results = []
+            category_filter = (category or "").strip().lower()
             for article in news[:10]:
                 title = article.get("title", "")
+                summary = article.get("summary", "")[:200]
+                if category_filter and category_filter not in ["general", "all", "any"]:
+                    text_blob = f"{title} {summary}".lower()
+                    if category_filter not in text_blob:
+                        continue
                 sentiment_data = self.analyze_sentiment_simple(title)
-                
+
                 results.append({
                     "title": title,
-                    "description": article.get("summary", "")[:200],
+                    "description": summary,
                     "url": article.get("link", ""),
                     "published_at": datetime.fromtimestamp(
                         article.get("providerPublishTime", 0)
@@ -244,9 +260,11 @@ class NewsClient:
             return []
     
     def analyze_news_sentiment(
-        self, 
-        symbol: str, 
-        company_name: str
+        self,
+        symbol: str,
+        company_name: str,
+        days: int = 7,
+        category: Optional[str] = None
     ) -> Dict:
         """
         Analyze overall sentiment from recent news
@@ -258,7 +276,9 @@ class NewsClient:
         Returns:
             Dictionary with overall sentiment analysis
         """
-        articles = self.get_stock_news(symbol, company_name, days=7)
+        articles = self.get_stock_news(
+            symbol, company_name, days=days, category=category
+        )
         
         if not articles:
             return {

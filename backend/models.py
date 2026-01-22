@@ -68,3 +68,7 @@ class MarketMakerRequest(BaseModel):
     inventory: float = Field(0.0, ge=-1000000, le=1000000)
     kappa: float = Field(1.5, gt=0, le=100)
     max_spread: Optional[float] = Field(None, gt=0, le=1000000)
+
+
+class GeminiQueryRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=100000)
