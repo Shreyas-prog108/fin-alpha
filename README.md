@@ -130,14 +130,26 @@ API Documentation will be available at: `http://localhost:8000/docs`
 ```
 fin-alpha/
 ├── agents/             # AI Agent logic (LangGraph, Tools)
+│   ├── clients/        # Data clients (Yahoo, TradingView, News)
+│   ├── prompts/        # Prompt templates for the agents
 │   ├── agent.py        # Main FinAgent class
-│   ├── tools.py        # Financial tools (Price, Risk, News)
-│   └── clients/        # Data clients (Yahoo, TradingView)
+│   ├── config.py       # Agent configuration
+│   ├── run.py          # Entry point for running the agent
+│   ├── state.py        # State management for LangGraph
+│   └── tools.py        # Financial tools (Price, Risk, News)
 ├── backend/            # FastAPI application
 │   ├── app.py          # App entry point
+│   ├── config.py       # Backend configuration
+│   ├── gemini_helper.py# Google Gemini integration
+│   ├── market_maker.py # Market making models
+│   ├── mint.py         # Mint news integration
 │   ├── models.py       # Pydantic data models
-│   └── risk_analysis.py # Quant logic
-├── finalpha            # Automation script
+│   ├── price_prediction.py # Price forecasting logic
+│   ├── risk_analysis.py    # Risk metrics (VaR, Sharpe)
+│   └── summarizer.py   # Text summarization
+├── static/             # Static assets
+│   └── favicon.svg
+├── .env.example        # Environment variables example
 └── requirements.txt    # Dependencies
 ```
 
