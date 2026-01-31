@@ -129,28 +129,44 @@ API Documentation will be available at: `http://localhost:8000/docs`
 
 ```
 fin-alpha/
-├── agents/             # AI Agent logic (LangGraph, Tools)
-│   ├── clients/        # Data clients (Yahoo, TradingView, News)
-│   ├── prompts/        # Prompt templates for the agents
-│   ├── agent.py        # Main FinAgent class
-│   ├── config.py       # Agent configuration
-│   ├── run.py          # Entry point for running the agent
-│   ├── state.py        # State management for LangGraph
-│   └── tools.py        # Financial tools (Price, Risk, News)
-├── backend/            # FastAPI application
-│   ├── app.py          # App entry point
-│   ├── config.py       # Backend configuration
-│   ├── gemini_helper.py# Google Gemini integration
-│   ├── market_maker.py # Market making models
-│   ├── mint.py         # Mint news integration
-│   ├── models.py       # Pydantic data models
-│   ├── price_prediction.py # Price forecasting logic
-│   ├── risk_analysis.py    # Risk metrics (VaR, Sharpe)
-│   └── summarizer.py   # Text summarization
-├── static/             # Static assets
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── .env.example
+├── agents/
+│   ├── __init__.py
+│   ├── agent.py
+│   ├── config.py
+│   ├── run.py
+│   ├── state.py
+│   ├── tools.py
+│   ├── clients/
+│   │   ├── __init__.py
+│   │   ├── backend_client.py
+│   │   ├── mint_client.py
+│   │   ├── news_api.py
+│   │   ├── tradingview_client.py
+│   │   └── yahoo_client.py
+│   └── prompts/
+│       ├── __init__.py
+│       ├── agent_prompts.py
+│       ├── subagent_prompts.py
+│       ├── synthesis_prompts.py
+│       └── system_prompts.py
+├── backend/
+│   ├── __init__.py
+│   ├── analyze.py
+│   ├── app.py
+│   ├── config.py
+│   ├── gemini_helper.py
+│   ├── market_maker.py
+│   ├── mint.py
+│   ├── models.py
+│   ├── price_prediction.py
+│   ├── risk_analysis.py
+│   └── summarizer.py
+├── static/
 │   └── favicon.svg
-├── .env.example        # Environment variables example
-└── requirements.txt    # Dependencies
 ```
 
 ## ⚠️ Disclaimer
