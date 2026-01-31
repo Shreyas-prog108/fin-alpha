@@ -7,7 +7,7 @@
 
 **Fin-Alpha** is a state-of-the-art financial analysis agent that combines real-time market data, advanced risk metrics, and Generative AI to provide actionable investment insights.
 
-> **🚀 Now Powered by Google Gemini 1.5 Pro & Flash!**
+> **🚀Powered by Google Gemini**
 
 ## ✨ Key Features
 
