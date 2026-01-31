@@ -6,8 +6,10 @@ Fetches real-time and historical market data from Yahoo Finance
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 from typing import Dict, List, Optional
 from datetime import datetime
+import time
 
 
 class YahooFinanceClient:
@@ -19,6 +21,29 @@ class YahooFinanceClient:
     def __init__(self):
         self.cache = {}
         self.cache_ttl = 300
+        self._session = self._create_session()
+    
+    def _create_session(self):
+        """Create a session with browser-like headers"""
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        })
+        return session
+
+    def _get_ticker(self, symbol: str) -> yf.Ticker:
+        """Get yfinance Ticker with custom session"""
+        return yf.Ticker(symbol, session=self._session)
     
     def _get_cached(self, key: str) -> Optional[Dict]:
         """Get cached data if not expired"""
@@ -46,31 +71,68 @@ class YahooFinanceClient:
             ValueError: If symbol is invalid
             Exception: If data fetch fails
         """
+        
         cache_key = f"price_{symbol}"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            
-            result = {
-                "symbol": symbol.upper(),
-                "current_price": info.get("currentPrice", info.get("regularMarketPrice", 0)),
-                "market_cap": info.get("marketCap", 0),
-                "pe_ratio": info.get("trailingPE", 0),
-                "company_name": info.get("longName", symbol),
-                "sector": info.get("sector", "Unknown"),
-                "industry": info.get("industry", "Unknown"),
-                "currency": info.get("currency", "USD"),
-                "exchange": info.get("exchange", "Unknown")
-            }
-            
-            self._set_cache(cache_key, result)
-            return result
-            
-        except Exception as e:
-            raise Exception(f"Failed to fetch price for {symbol}: {str(e)}")
+        
+        # Retry with backoff
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                ticker = self._get_ticker(symbol)
+                
+                
+                hist = ticker.history(period="5d")
+                
+                if hist.empty:
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt) 
+                        continue
+                    raise Exception(f"No data available for {symbol}")
+                
+                # Get last available data
+                last_row = hist.iloc[-1]
+                prev_close = hist.iloc[-2]['Close'] if len(hist) > 1 else last_row['Close']
+                
+                current_price = float(last_row['Close'])
+                change = current_price - prev_close
+                change_percent = (change / prev_close * 100) if prev_close else 0
+                
+                result = {
+                    "symbol": symbol.upper(),
+                    "current_price": round(current_price, 2),
+                    "previous_close": round(prev_close, 2),
+                    "change": round(change, 2),
+                    "change_percent": round(change_percent, 2),
+                    "day_high": round(float(last_row['High']), 2),
+                    "day_low": round(float(last_row['Low']), 2),
+                    "volume": int(last_row['Volume']),
+                    "company_name": symbol.replace('.NSE', '').replace('.BO', ''),
+                    "market_cap": 0,
+                    "pe_ratio": 0,
+                    "sector": "Unknown",
+                    "industry": "Unknown",
+                    "currency": "INR" if '.NSE' in symbol or '.BO' in symbol else "USD",
+                    "exchange": "NSE" if '.NSE' in symbol else ("BSE" if '.BO' in symbol else "Unknown")
+                }
+                
+                self._set_cache(cache_key, result)
+                print(f"[YAHOO] Got price for {symbol}: {current_price}")
+                return result
+                
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "Too Many Requests" in error_msg:
+                    print(f"[YAHOO] Rate limit (429) hit for {symbol}. Stopping retries.")
+                    raise Exception(f"Yahoo Rate Limit: {error_msg}")
+                
+                if attempt < max_retries - 1:
+                    print(f"[YAHOO] Retry {attempt + 1} for {symbol}: {error_msg[:50]}")
+                    time.sleep(2 ** attempt + 1) 
+                else:
+                    raise Exception(f"Failed to fetch price for {symbol}: {error_msg}")
     
     def get_stock_info(self, symbol: str) -> Dict:
         """
@@ -88,7 +150,7 @@ class YahooFinanceClient:
             return cached
         
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = self._get_ticker(symbol)
             info = ticker.info
             
             result = {
@@ -145,7 +207,7 @@ class YahooFinanceClient:
             List of dictionaries with OHLCV data
         """
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = self._get_ticker(symbol)
             hist = ticker.history(period=period)
             
             if hist.empty:
@@ -183,7 +245,7 @@ class YahooFinanceClient:
             return cached
         
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = self._get_ticker(symbol)
             info = ticker.info
             
             result = {

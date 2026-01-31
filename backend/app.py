@@ -38,6 +38,8 @@ from backend.models import (
     RiskAnalysisRequest,
     MarketMakerRequest,
     GeminiQueryRequest,
+    GeminiSearchAnalysisRequest,
+    NewsAnalysisRequest,
 )
 from backend.risk_analysis import analyze_risk
 from backend.market_maker import market_maker_quote
@@ -199,17 +201,22 @@ async def list_gemini_models(api_key: str = Depends(verify_api_key)):
 
 
 @app.post("/api/gemini-query")
-async def gemini_query(
+async def gemini_query_endpoint(
     request: GeminiQueryRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
     Proxy a prompt to Gemini via backend helper
-    Requires: Authorization: Bearer <API_KEY>
+    Optionally enable Google Search grounding with use_search=true
     """
     try:
-        response_text = await query_gemini(request.prompt)
-        return {"response": response_text}
+        if request.use_search:
+            from backend.gemini_helper import query_gemini_with_search
+            result = await query_gemini_with_search(request.prompt)
+            return result
+        else:
+            response_text = await query_gemini(request.prompt)
+            return {"response": response_text}
     except HTTPException:
         raise
     except Exception as e:
@@ -217,6 +224,190 @@ async def gemini_query(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
+        )
+
+
+@app.post("/api/search-analysis")
+async def search_grounded_analysis(
+    request: GeminiSearchAnalysisRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Perform comprehensive stock analysis using Gemini with Google Search grounding.
+    This retrieves real-time news and market data via search, then provides AI analysis.
+    """
+    try:
+        from backend.gemini_helper import query_gemini_with_search
+        
+        logger.info(f"Search analysis requested for {request.symbol}")
+        
+        # Build comprehensive search prompt
+        prompt = f"""You are a financial analyst. Use Google Search to find the latest information and provide a comprehensive analysis.
+
+**Stock:** {request.company_name} ({request.symbol})
+**Analysis Type:** {request.query_type}
+**Time Frame:** {request.time_frame}
+
+Please search for and analyze:
+
+1. **Latest News** (last 7 days):
+   - Search for recent news about {request.company_name}
+   - Include any earnings reports, management changes, or major announcements
+   
+2. **Stock Price & Performance**:
+   - Current stock price and recent price movement
+   - Compare with sector performance
+   
+3. **Market Sentiment**:
+   - Analyst ratings and price targets
+   - Social media and investor sentiment
+   
+4. **Key Events & Catalysts**:
+   - Upcoming earnings dates
+   - Any regulatory or legal developments
+   - Product launches or business developments
+
+5. **Investment Recommendation**:
+   Based on your search findings, provide:
+   - BUY / HOLD / SELL recommendation
+   - Key reasons for your recommendation
+   - Risk factors to consider
+   - Price target (if available from analyst consensus)
+
+Format your response with clear sections and bullet points. Include specific dates and numbers where available. Cite your sources."""
+
+        # Query Gemini with search grounding
+        result = await query_gemini_with_search(prompt)
+        
+        return {
+            "symbol": request.symbol,
+            "company_name": request.company_name,
+            "query_type": request.query_type,
+            "time_frame": request.time_frame,
+            "analysis": result.get("response", ""),
+            "sources": result.get("sources", []),
+            "search_used": result.get("search_used", False)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in search analysis: {type(e).__name__}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Search analysis failed"
+        )
+
+
+@app.post("/api/analyze-news")
+async def analyze_news(
+    request: NewsAnalysisRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Analyze combined news from NewsAPI and LiveMint using Gemini
+    Returns sentiment analysis and investment insights
+    """
+    try:
+        logger.info(f"News analysis requested for {request.symbol}")
+        
+        # Prepare articles summary
+        all_articles = []
+        
+        # Process NewsAPI articles
+        for article in request.newsapi_articles[:3]:
+            all_articles.append({
+                "source": article.get("source", "NewsAPI"),
+                "title": article.get("title", ""),
+                "summary": article.get("description", article.get("summary", ""))[:500],
+                "sentiment": article.get("sentiment", "neutral"),
+                "sentiment_score": article.get("sentiment_score", 0)
+            })
+        
+        # Process LiveMint articles
+        for article in request.mint_articles[:3]:
+            all_articles.append({
+                "source": "LiveMint",
+                "title": article.get("title", ""),
+                "summary": article.get("summary", "")[:500],
+                "sentiment": article.get("sentiment", "neutral"),
+                "sentiment_score": article.get("sentiment_score", 0)
+            })
+        
+        if not all_articles:
+            return {
+                "symbol": request.symbol,
+                "company_name": request.company_name,
+                "analysis": "No recent news articles found for analysis.",
+                "sentiment_summary": "neutral",
+                "confidence": 0.0,
+                "articles_analyzed": 0
+            }
+        
+        # Build prompt for Gemini
+        articles_text = "\n".join([
+            f"- [{a['source']}] {a['title']}: {a['summary'][:200]}... (Sentiment: {a['sentiment']})"
+            for a in all_articles
+        ])
+        
+        prompt = f"""Analyze the following recent news articles about {request.company_name} ({request.symbol}) and provide:
+
+1. **Overall Sentiment**: Is the news generally positive, negative, or mixed for the stock?
+2. **Key Themes**: What are the main topics/events being discussed?
+3. **Investment Implications**: How might this news affect the stock price in the short term?
+4. **Risk Factors**: Any concerns or risks highlighted in the news?
+5. **Confidence Level**: How confident are you in this analysis (low/medium/high)?
+
+News Articles:
+{articles_text}
+
+Provide a concise analysis (max 300 words) that would help an investor make informed decisions."""
+        
+        # Get Gemini analysis
+        analysis = await query_gemini(prompt)
+        
+        # Calculate aggregate sentiment
+        sentiments = [a["sentiment"] for a in all_articles]
+        scores = [a["sentiment_score"] for a in all_articles if a["sentiment_score"] != 0]
+        
+        positive = sentiments.count("positive")
+        negative = sentiments.count("negative")
+        
+        if positive > negative:
+            overall_sentiment = "positive"
+        elif negative > positive:
+            overall_sentiment = "negative"
+        else:
+            overall_sentiment = "neutral"
+        
+        avg_score = sum(scores) / len(scores) if scores else 0
+        
+        return {
+            "symbol": request.symbol,
+            "company_name": request.company_name,
+            "analysis": analysis,
+            "sentiment_summary": overall_sentiment,
+            "sentiment_score": round(avg_score, 2),
+            "sentiment_breakdown": {
+                "positive": positive,
+                "negative": negative,
+                "neutral": len(sentiments) - positive - negative
+            },
+            "articles_analyzed": len(all_articles),
+            "sources": {
+                "newsapi": len(request.newsapi_articles[:3]),
+                "livemint": len(request.mint_articles[:3])
+            },
+            "top_headlines": [a["title"] for a in all_articles[:3]]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in news analysis: {type(e).__name__}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze news"
         )
 
 

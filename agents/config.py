@@ -18,7 +18,7 @@ class AgentConfig(BaseSettings):
     NEWSAPI_URL: str = Field("https://newsapi.org/v2")
     BACKEND_URL: Optional[str] = Field("http://localhost:8000")   
     API_KEY: Optional[str] = Field(None) 
-    GEMINI_MODEL: str = Field("gemini-2.5-flash")
+    GEMINI_MODEL: str = Field("gemini-3-flash-preview")
     LLM_TEMPERATURE: float = Field(1.0, ge=0.0, le=2.0)
     MAX_TOKENS: int = Field(2048, ge=1, le=100000)
     MAX_ITERATIONS: int = Field(5, ge=1, le=100)

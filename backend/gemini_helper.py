@@ -1,25 +1,26 @@
 """
-Gemini API Helper - SECURITY HARDENED
-Handles API key securely via headers instead of URL parameters
+Gemini API Helper - WITH GOOGLE SEARCH GROUNDING
+Handles API key authentication for Google Gemini API with search capabilities
 """
 import logging
 from fastapi import HTTPException, status
 import httpx
-from backend.config import GEMINI_API_KEY, GEMINI_API_URL
+from backend.config import GEMINI_API_KEY, GEMINI_API_URL, GEMINI_MODEL, GEMINI_API_VERSION
 
 logger = logging.getLogger(__name__)
 
 # =========================
-# GEMINI HELPER - SECURE
+# GEMINI HELPER - WITH SEARCH
 # =========================
 
 
-async def query_gemini(prompt: str) -> str:
+async def query_gemini(prompt: str, use_search: bool = False) -> str:
     """
-    Query Gemini API safely with secure header-based authentication
+    Query Gemini API safely with API key authentication
     
     Args:
         prompt: The prompt to send to Gemini
+        use_search: Whether to enable Google Search grounding
         
     Returns:
         The response text from Gemini
@@ -47,10 +48,12 @@ async def query_gemini(prompt: str) -> str:
         )
     
     try:
+        # Gemini API uses API key as query parameter
+        url_with_key = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
         headers = {
-            "Authorization": f"Bearer {GEMINI_API_KEY}",
             "Content-Type": "application/json",
         }
+        
         payload = {
             "contents": [
                 {
@@ -61,15 +64,23 @@ async def query_gemini(prompt: str) -> str:
             ]
         }
         
-        async with httpx.AsyncClient(timeout=60) as client:
+        # Add Google Search grounding if enabled
+        if use_search:
+            payload["tools"] = [
+                {
+                    "google_search": {}
+                }
+            ]
+        
+        async with httpx.AsyncClient(timeout=90) as client:
             response = await client.post(
-                GEMINI_API_URL,
+                url_with_key,
                 headers=headers,
                 json=payload,
             )
             
             if response.status_code != 200:
-                logger.error(f"Gemini API error: {response.status_code}")
+                logger.error(f"Gemini API error: {response.status_code} - {response.text[:200]}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Service temporarily unavailable"
@@ -104,3 +115,103 @@ async def query_gemini(prompt: str) -> str:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
         )
+
+
+async def query_gemini_with_search(prompt: str) -> dict:
+    """
+    Query Gemini API with Google Search grounding enabled.
+    Returns both the response text and search results/sources.
+    
+    Args:
+        prompt: The prompt to send to Gemini
+        
+    Returns:
+        Dictionary with 'response' text and 'sources' list
+    """
+    if not GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY not configured")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service temporarily unavailable"
+        )
+    
+    try:
+        url_with_key = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "tools": [
+                {"google_search": {}}
+            ]
+        }
+        
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                url_with_key,
+                headers=headers,
+                json=payload,
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Gemini Search API error: {response.status_code}")
+                # Fallback to regular query
+                text = await query_gemini(prompt, use_search=False)
+                return {"response": text, "sources": [], "search_used": False}
+            
+            body = response.json()
+            
+            # Extract response text
+            text = ""
+            sources = []
+            
+            try:
+                candidate = body["candidates"][0]
+                text = candidate["content"]["parts"][0]["text"]
+                
+                # Extract grounding metadata (search sources)
+                if "groundingMetadata" in candidate:
+                    grounding = candidate["groundingMetadata"]
+                    
+                    # Get search entry point (if available)
+                    if "searchEntryPoint" in grounding:
+                        sources.append({
+                            "type": "search",
+                            "content": grounding["searchEntryPoint"].get("renderedContent", "")
+                        })
+                    
+                    # Get grounding chunks (actual sources)
+                    if "groundingChunks" in grounding:
+                        for chunk in grounding["groundingChunks"]:
+                            if "web" in chunk:
+                                sources.append({
+                                    "type": "web",
+                                    "title": chunk["web"].get("title", ""),
+                                    "uri": chunk["web"].get("uri", "")
+                                })
+                    
+                    # Get web search queries used
+                    if "webSearchQueries" in grounding:
+                        sources.append({
+                            "type": "queries",
+                            "queries": grounding["webSearchQueries"]
+                        })
+                        
+            except (KeyError, IndexError, TypeError) as e:
+                logger.warning(f"Could not parse search response: {e}")
+                text = await query_gemini(prompt, use_search=False)
+            
+            return {
+                "response": text,
+                "sources": sources,
+                "search_used": True
+            }
+            
+    except Exception as e:
+        logger.error(f"Search query failed: {e}, falling back to regular query")
+        text = await query_gemini(prompt, use_search=False)
+        return {"response": text, "sources": [], "search_used": False}

@@ -149,7 +149,7 @@ Guidance:
         cached = self.symbol_metadata_cache.get(symbol, {})
         if cached.get("name"):
             return cached["name"]
-        return symbol.replace(".NS", "").replace(".BO", "")
+        return symbol.replace(".NSE", "").replace(".BO", "")
 
     def _apply_exchange_suffix(self, ticker: str, exchange: str) -> str:
         if not ticker:
@@ -158,7 +158,7 @@ Guidance:
             return ticker.upper()
         exchange_upper = (exchange or "").upper()
         if exchange_upper in ["NSE", "NSI"]:
-            return f"{ticker.upper()}.NS"
+            return f"{ticker.upper()}.NSE"
         if exchange_upper in ["BSE", "BOM"]:
             return f"{ticker.upper()}.BO"
         return ticker.upper()
@@ -180,6 +180,7 @@ Guidance:
         return {"raw": result}
 
     def _resolve_symbol_from_tradingview(self, query: str) -> Tuple[Optional[str], Dict]:
+        """TradingView symbol resolution (often blocked by rate limits)"""
         try:
             result = self.tradingview.search_symbol(query)
             if not result:
@@ -198,30 +199,53 @@ Guidance:
             print(f"[TRADINGVIEW ERROR] {str(e)}")
             return None, {}
 
-    def resolve_symbol(self, query: str) -> Tuple[Optional[str], Dict]:
+    def _resolve_symbol_fallback(self, query: str) -> Tuple[Optional[str], Dict]:
         """
-        Resolve a symbol from a company name or ticker using TradingView.
-        Returns (symbol, metadata) or (None, {}).
+        Minimal fallback for symbol resolution.
+        Only used when Gemini doesn't provide yahoo_symbols.
+        Just formats the input - no hardcoded stock lists.
         """
         query_clean = query.strip()
         if not query_clean:
             return None, {}
-        if query_clean in self.ticker_cache:
-            symbol = self.ticker_cache[query_clean]
+        
+        query_upper = query_clean.upper()
+        
+
+        if any(suffix in query_upper for suffix in ['.NSE','.BSE', '.BO', '.L', '.HK', '.T', '.AX', '.TO']):
+            exchange = "NSE" if ".NSE" in query_upper else "Other"
+            return query_upper, {"name": query_clean, "exchange": exchange, "source": "direct"}
+        
+
+        if len(query_upper) <= 15 and query_upper.replace("&", "").replace("-", "").replace(".", "").isalnum():
+            return query_upper, {"name": query_clean, "exchange": "Unknown", "source": "fallback"}
+        
+        return None, {}
+
+    def resolve_symbol(self, query: str) -> Tuple[Optional[str], Dict]:
+        """
+        Minimal symbol resolution fallback.
+        Gemini should handle all symbol resolution in parse_query_node.
+        This is only used as a last resort.
+        """
+        query_clean = query.strip()
+        if not query_clean:
+            return None, {}
+        
+
+        cache_key = query_clean.lower()
+        if cache_key in self.ticker_cache:
+            symbol = self.ticker_cache[cache_key]
+            print(f"[CACHE HIT] '{query_clean}' -> {symbol}")
             return symbol, self.symbol_metadata_cache.get(symbol, {})
 
-        symbol, metadata = self._resolve_symbol_from_tradingview(query_clean)
+
+        symbol, metadata = self._resolve_symbol_fallback(query_clean)
         if symbol:
-            print(f"[TRADINGVIEW] '{query_clean}' -> {symbol} ({metadata.get('name', '')})")
-            self.ticker_cache[query_clean] = symbol
+            self.ticker_cache[cache_key] = symbol
             if metadata:
                 self.symbol_metadata_cache[symbol] = metadata
-            return symbol, metadata
-
-        if self._looks_like_ticker(query_clean):
-            symbol = query_clean.upper()
-            metadata = {"name": query_clean.upper(), "exchange": "", "source": "input"}
-            self.symbol_metadata_cache[symbol] = metadata
+            print(f"[FALLBACK] '{query_clean}' -> {symbol}")
             return symbol, metadata
 
         print(f"[SEARCH FAILED] No symbol found for '{query_clean}'")
@@ -255,32 +279,36 @@ Guidance:
     async def parse_query_node(self,state:AgentState)->AgentState:
         """
         Node 1: Parse user query
-        Extract company names and use AI-powered search to find correct ticker symbols
+        Use Gemini to extract stock symbols directly in Yahoo Finance format
         """   
         query=state["user_query"]
-        prompt=f"""You are a financial assistant. Analyze this query and extract:
-1. Company/stock names mentioned (use BRAND NAMES, not legal names)
-2. Query type (price, risk, sentiment, investment_decision, news)
-3. User intent
-4. Time frame as a Yahoo period string: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
-5. Sentiment focus for the query (positive, negative, neutral, mixed, or unknown)
-6. News category/angle if mentioned (e.g., earnings, product, regulatory, merger, guidance, dividend, macro, analyst_ratings, legal, sector, general)
+        prompt=f"""You are a financial assistant expert in stock markets. Analyze this query and extract information.
 
-Query: "{query}"
+USER QUERY: "{query}"
 
-Return ONLY valid JSON (no markdown):
-{{"company_names":["Bank of Maharashtra"],"query_type":"price","intent":"monthly performance analysis","time_frame":"1mo","sentiment_focus":"neutral","news_category":"general"}}
+Extract the following and return ONLY a valid JSON object:
 
-IMPORTANT RULES:
-- Use BRAND NAMES: "Nykaa" not "FSN E-Commerce Ventures Ltd."
-- Use BRAND NAMES: "Bank of Baroda" not "Bank of Baroda Ltd."
-- Use BRAND NAMES: "Paytm" not "One 97 Communications"
-- For typos (e.g., "nykka"), correct to proper brand name (e.g., "Nykaa")
-- Do NOT add .NS or .BO suffix - just the brand name
-- If user provides ticker with suffix (e.g., SBIN.NS), keep it as-is
-- If no explicit time frame, infer the period using sentiment and intent
-- If no category, use general
-- If sentiment is not clear, use unknown
+1. **yahoo_symbols**: The EXACT Yahoo Finance ticker symbols for the stocks mentioned.
+   - For Indian stocks on NSE: Add ".NSE" suffix (e.g., "SBIN.NSE" for SBI, "RELIANCE.NSE" for Reliance, "TCS.NSE" for TCS)
+   - For Indian stocks on BSE: Add ".BO" suffix (e.g., "SBIN.BO")
+   - For US stocks: No suffix needed (e.g., "AAPL", "GOOGL", "TSLA")
+   - Common Indian bank tickers: SBI/State Bank = "SBIN.NSE", HDFC Bank = "HDFCBANK.NSE", ICICI = "ICICIBANK.NSE"
+   - For other markets: Use appropriate suffix (.L for London, .HK for Hong Kong)
+
+2. **company_names**: Full company names corresponding to each symbol
+
+3. **query_type**: One of: price, risk, sentiment, investment_decision, news_summary, comparison
+
+4. **intent**: What the user wants to know
+
+5. **time_frame**: Yahoo Finance period string: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
+
+6. **sentiment_focus**: positive, negative, neutral, mixed, or unknown
+
+7. **news_category**: earnings, product, regulatory, merger, guidance, dividend, macro, analyst_ratings, legal, sector, general
+
+Return ONLY this JSON format (no other text):
+{{"yahoo_symbols": ["SBIN.NSE"], "company_names": ["State Bank of India"], "query_type": "investment_decision", "intent": "analyze SBI stock", "time_frame": "3mo", "sentiment_focus": "unknown", "news_category": "general"}}
 """
         try:
             response_payload = await self.backend.query_gemini(prompt)
@@ -302,12 +330,17 @@ IMPORTANT RULES:
                         text_parts.append(str(item))            
                 content = ' '.join(text_parts)
             
-            json_match = re.search(r'\{[^\{\}]*"company_names"[^\{\}]*\}', content, re.DOTALL)
+
+            json_match = re.search(r'\{[^\{\}]*"(?:yahoo_symbols|company_names)"[^\{\}]*\}', content, re.DOTALL)
             
             if json_match:
                 json_str = json_match.group()
                 parsed = json.loads(json_str)
+                
+
+                yahoo_symbols = parsed.get("yahoo_symbols", [])
                 company_names = parsed.get("company_names", [])
+                
                 state["query_type"] = parsed.get("query_type", "investment_decision")
                 state["intent"] = parsed.get("intent", query)
                 state["sentiment_focus"] = self._normalize_sentiment_focus(
@@ -323,29 +356,58 @@ IMPORTANT RULES:
                     state["time_frame"] = self._infer_timeframe_from_query(
                         query, state["intent"], state["sentiment_focus"]
                     )
-                resolved_symbols = []
-                symbol_metadata = {}
-                for name in company_names:
-                    print(f"[SEARCH] Resolving symbol for: {name}")
-                    symbol, metadata = self.resolve_symbol(name)
-                    if not symbol:
-                        symbol, metadata = self.resolve_symbol(f"{name} India")
-                    if symbol:
+                
+
+                if yahoo_symbols:
+                    resolved_symbols = []
+                    symbol_metadata = {}
+                    for i, symbol in enumerate(yahoo_symbols):
+                        symbol = symbol.upper().strip()
+                        if not any(suffix in symbol for suffix in ['.NSE','.BSE', '.BO', '.L', '.HK']) and len(symbol) <= 10:
+
+                            pass 
+                        name = company_names[i] if i < len(company_names) else symbol
                         resolved_symbols.append(symbol)
-                        if metadata:
-                            symbol_metadata[symbol] = metadata
-                        print(f"[RESOLVED] '{name}' -> {symbol}")
-                    else:
-                        print(f"[ERROR] Failed to resolve '{name}'")
-                if not resolved_symbols:
-                    print(f"[FALLBACK] No symbols found, trying to search entire query...")
-                    symbol, metadata = self.resolve_symbol(query)
-                    state["symbols"] = [symbol] if symbol else ["AAPL"]
-                    if symbol and metadata:
-                        symbol_metadata[symbol] = metadata
-                else:
+                        symbol_metadata[symbol] = {"name": name, "source": "gemini"}
+                        print(f"[GEMINI] Resolved: {name} -> {symbol}")
+                    
                     state["symbols"] = resolved_symbols
-                state["symbol_metadata"] = symbol_metadata
+                    state["symbol_metadata"] = symbol_metadata
+                
+
+                elif company_names:
+                    resolved_symbols = []
+                    symbol_metadata = {}
+                    for name in company_names:
+                        print(f"[SEARCH] Resolving symbol for: {name}")
+                        symbol, metadata = self.resolve_symbol(name)
+                        if not symbol:
+                            symbol, metadata = self.resolve_symbol(f"{name} India")
+                        if symbol:
+                            resolved_symbols.append(symbol)
+                            if metadata:
+                                symbol_metadata[symbol] = metadata
+                            print(f"[RESOLVED] '{name}' -> {symbol}")
+                        else:
+                            print(f"[ERROR] Failed to resolve '{name}'")
+                    
+                    if resolved_symbols:
+                        state["symbols"] = resolved_symbols
+                        state["symbol_metadata"] = symbol_metadata
+                    else:
+                        print(f"[FALLBACK] No symbols found, trying to search entire query...")
+                        symbol, metadata = self.resolve_symbol(query)
+                        state["symbols"] = [symbol] if symbol else []
+                        if symbol and metadata:
+                            symbol_metadata[symbol] = metadata
+                        state["symbol_metadata"] = symbol_metadata
+                else:
+
+                    print(f"[FALLBACK] No symbols in Gemini response, searching query...")
+                    symbol, metadata = self.resolve_symbol(query)
+                    state["symbols"] = [symbol] if symbol else []
+                    if symbol and metadata:
+                        state["symbol_metadata"] = {symbol: metadata}
                 
             else:
                 print(f"[FALLBACK] Could not parse JSON, searching query directly...")
@@ -355,8 +417,28 @@ IMPORTANT RULES:
                     if metadata:
                         state["symbol_metadata"] = {symbol: metadata}
                 else:
-                    symbols = re.findall(r'\b[A-Z]{2,5}(?:\.(?:NS|BO))?\b', query.upper())
-                    state["symbols"] = symbols if symbols else ["AAPL"]
+                    potential_tickers = re.findall(r'\b([A-Z]{2,10}(?:\.[A-Z]{1,2})?)\b', query.upper())
+                    
+                    # Filter out common English words
+                    common_words = {
+                        'THE', 'AND', 'FOR', 'WITH', 'THAT', 'THIS', 'FROM', 'HAVE', 'WILL',
+                        'WHAT', 'WHEN', 'WHERE', 'WHICH', 'WHO', 'HOW', 'WHY', 'CAN', 'ALL',
+                        'ANY', 'ARE', 'BUT', 'GET', 'HAS', 'HER', 'HIM', 'HIS', 'ITS', 'MAY',
+                        'NEW', 'NOW', 'OLD', 'OUR', 'OUT', 'OWN', 'SAY', 'SHE', 'TOO', 'TWO',
+                        'USE', 'WAY', 'ABOUT', 'AFTER', 'ALSO', 'BACK', 'BEEN', 'BEING',
+                        'STOCK', 'PRICE', 'BUY', 'SELL', 'HOLD', 'MARKET', 'TRADE', 'INVEST',
+                        'LAST', 'NEXT', 'GIVE', 'FINAL', 'PLAN', 'MONTHS', 'YEAR', 'WEEK',
+                        'ANALYSIS', 'ANALYZE', 'RECOMMENDATION', 'SHOULD', 'COULD', 'WOULD',
+                        'NEWS', 'SENTIMENT', 'RISK', 'RETURN', 'GROWTH', 'VALUE', 'TREND'
+                    }
+                    
+                    valid_tickers = [t for t in potential_tickers if t not in common_words]
+                    
+
+                    if 1 <= len(valid_tickers) <= 3:
+                        state["symbols"] = valid_tickers
+                    else:
+                        state["symbols"] = []
                 
                 state["query_type"] = "sentiment" if "sentiment" in query.lower() else "investment_decision"
                 state["intent"] = query
@@ -369,7 +451,7 @@ IMPORTANT RULES:
         except Exception as e:
             print(f"[ERROR] Parse error: {e}")
             symbol, metadata = self.resolve_symbol(query)
-            state["symbols"] = [symbol] if symbol else ["AAPL"]
+            state["symbols"] = [symbol] if symbol else []
             if symbol and metadata:
                 state["symbol_metadata"] = {symbol: metadata}
             state["query_type"] = "investment_decision"
@@ -391,7 +473,12 @@ IMPORTANT RULES:
         Node 2: Prefetch core market data and news (TradingView + News)
         """
         symbols = state.get("symbols", [])
-        symbol = symbols[0] if symbols else "AAPL"
+        if not symbols:
+            print("[PREFETCH] No symbols to fetch data for")
+            state["prefetch_results"] = {"error": "No valid stock symbol found in query"}
+            state["step_count"] += 1
+            return state
+        symbol = symbols[0]
 
         prefetch_results = {}
         try:
@@ -408,13 +495,24 @@ IMPORTANT RULES:
         Node 3: Prepare tools list (execute all tools)
         """
         symbols = state["symbols"]
+        query_type = state.get("query_type", "investment_decision")
+        intent = state.get("intent", "").lower()
+        
         if len(symbols) > 1:
             state["tools_to_use"] = ["compare_stocks"]
         else:
-            state["tools_to_use"] = [
+
+            tools = [
                 "get_stock_price",
                 "get_stock_info"
             ]
+            
+
+            if query_type in ["sentiment", "news_summary"] or \
+               any(word in intent for word in ["news", "sentiment", "headline", "article"]):
+                tools.append("analyze_combined_news")
+            
+            state["tools_to_use"] = tools
 
         state["step_count"] += 1
         return state
@@ -422,7 +520,12 @@ IMPORTANT RULES:
     async def execute_tools_node(self, state: AgentState) -> AgentState:
         """Node 4: Execute tools"""
         tools_to_use = state["tools_to_use"]
-        symbols = state["symbols"] if state["symbols"] else ["AAPL"]
+        symbols = state["symbols"]
+        if not symbols:
+            print("[TOOLS] No symbols to analyze")
+            state["tool_results"] = {"error": "No valid stock symbol found. Please specify a stock name or ticker."}
+            state["step_count"] += 1
+            return state
         results = {}
         prefetch = state.get("prefetch_results", {})
         timeframe = self._normalize_timeframe(state.get("time_frame"))
@@ -463,6 +566,12 @@ IMPORTANT RULES:
                             "company_name": company_name,
                             "days": days,
                             "category": category
+                        })
+                    elif tool_name == "analyze_combined_news":
+                        result = await tool.ainvoke({
+                            "symbol": symbol,
+                            "company_name": company_name,
+                            "days": days
                         })
                     elif tool_name in ["get_hist_data", "get_analyze_risk", "predict_price", "analyze_chart"]:
                         result = await tool.ainvoke({
@@ -519,7 +628,8 @@ IMPORTANT RULES:
             "sentiment": {
                 "news": parsed_results.get("get_stock_news", []),
                 "sentiment": parsed_results.get("analyze_news_sentiment", {}),
-                "news_summary": parsed_results.get("summarize_news_articles", {})
+                "news_summary": parsed_results.get("summarize_news_articles", {}),
+                "combined_news_analysis": parsed_results.get("analyze_combined_news", {})
             },
             "prediction": {
                 "prediction": parsed_results.get("predict_price", {}),
@@ -609,7 +719,7 @@ CRITICAL REQUIREMENTS:
 
 1. **Key Insights** (3-5 bullet points with specific numbers from the data)
    - USE CORRECT CURRENCY SYMBOL based on stock exchange:
-     * .NS or .BO (India) → ₹
+     * .NSE or .BO (India) → ₹
      * .L (London) → £
      * .PA, .DE, .AS, .MI, .MC (Europe) → €
      * .T (Tokyo) → ¥

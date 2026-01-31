@@ -1,6 +1,6 @@
 """
 Tool Descriptions and Usage Guidance for FinTerm Agent
-Compact version with essential information for all 12 tools
+Compact version with essential information for all tools
 """
 
 from typing import Dict
@@ -20,6 +20,9 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "get_market_news": "Get general market news. Use for: market conditions, macro trends.",
     "compare_stocks": "Compare multiple stocks side-by-side. Use for: stock comparison, relative analysis.",
     "calculate_portfolio_metrics": "Calculate portfolio volatility, return, Sharpe ratio. Use for: portfolio analysis.",
+    "analyze_combined_news": "Analyze news from NewsAPI + LiveMint with AI. Use for: comprehensive news analysis.",
+    "search_grounded_analysis": "🔥 PREFERRED: Get comprehensive analysis using Gemini + Google Search. Real-time news, prices, sentiment. Use for: investment decisions, news, recommendations.",
+    "quick_search_query": "Quick real-time search for any market query. Use for: general questions, quick lookups.",
 }
 
 # ========== TOOL SELECTION GUIDE ==========
@@ -27,54 +30,62 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
 TOOL_SELECTION_GUIDE = """
 Query Type → Tools:
 
-1. Current Price: get_stock_price
-2. Risk Check: analyze_stock_risk + get_stock_info
-3. Price Prediction: predict_stock_price + get_historical_data
-4. Investment Decision (comprehensive):
-   - get_stock_price
-   - analyze_stock_risk
-   - analyze_news_sentiment
-   - predict_stock_price
-   - get_financial_metrics
-5. Comparison: compare_stocks
-6. Sentiment: analyze_news_sentiment + get_stock_news
-7. Market Overview: get_market_news
-8. Portfolio: calculate_portfolio_metrics
+⚡ PREFERRED: Use search_grounded_analysis for most queries - it provides real-time data!
 
-General Rule: Start simple, add tools as needed. Always include risk for investment decisions.
+1. Current Price: get_stock_price OR search_grounded_analysis (more reliable)
+2. Risk Check: get_analyze_risk + get_stock_info
+3. Price Prediction: predict_price + get_hist_data
+4. Investment Decision (comprehensive):
+   - search_grounded_analysis (BEST - gets everything via Google Search)
+   - OR fallback to: get_stock_price + get_analyze_risk + analyze_news_sentiment + predict_price
+5. News & Sentiment: search_grounded_analysis OR analyze_combined_news
+6. Comparison: compare_stocks
+7. Market Overview: quick_search_query("market news today")
+8. Portfolio: calculate_portfolio_metrics
+9. General Questions: quick_search_query
+
+General Rule: PREFER search_grounded_analysis for any investment/analysis query.
+Fallback to other tools if search fails or for specific data needs.
 """
 
 # ========== USAGE EXAMPLES ==========
 
 USAGE_EXAMPLES = """
-Q: "What's AAPL price?" → get_stock_price("AAPL")
-Q: "Is TSLA risky?" → analyze_stock_risk("TSLA")
-Q: "Should I buy NVDA?" → [5 tools: price, risk, sentiment, prediction, metrics]
+Q: "What's AAPL price?" → search_grounded_analysis("AAPL", "Apple Inc", "analysis") OR get_stock_price("AAPL")
+Q: "Is TSLA risky?" → search_grounded_analysis("TSLA", "Tesla", "analysis")
+Q: "Should I buy NVDA?" → search_grounded_analysis("NVDA", "NVIDIA", "recommendation")
+Q: "What's happening in the market?" → quick_search_query("Indian stock market news today")
 Q: "Compare AAPL vs GOOGL" → compare_stocks(["AAPL", "GOOGL"])
+Q: "Reliance news" → search_grounded_analysis("RELIANCE.NS", "Reliance Industries", "news")
 """
 
 # ========== TOOL CATEGORIES ==========
 
 TOOL_CATEGORIES = {
-    "market_data": ["get_stock_price", "get_stock_info", "get_historical_data", "get_financial_metrics"],
-    "risk_analysis": ["analyze_stock_risk", "get_market_maker_quote"],
-    "prediction": ["predict_stock_price"],
-    "sentiment": ["get_stock_news", "analyze_news_sentiment", "get_market_news"],
+    "search_powered": ["search_grounded_analysis", "quick_search_query"],  # PREFER THESE
+    "market_data": ["get_stock_price", "get_stock_info", "get_hist_data"],
+    "risk_analysis": ["get_analyze_risk", "get_market_maker_quote"],
+    "prediction": ["predict_price"],
+    "sentiment": ["get_stock_news", "analyze_news_sentiment", "get_market_news", "analyze_combined_news"],
     "comparison": ["compare_stocks", "calculate_portfolio_metrics"]
 }
 
 # ========== DECISION TREE ==========
 
 DECISION_TREE = """
-1. Specific stock? → Extract symbol
+1. Specific stock? → Extract symbol + company name
 2. Query type?
-   - Price → get_stock_price
-   - Risk → analyze_stock_risk
-   - Investment → ALL tools
-   - Prediction → predict_stock_price
-   - Sentiment → analyze_news_sentiment
+   - Investment/Analysis → search_grounded_analysis (BEST)
+   - Price Only → get_stock_price OR search_grounded_analysis
+   - Risk → get_analyze_risk
+   - Prediction → predict_price
+   - News → search_grounded_analysis(type="news") OR analyze_combined_news
+   - Sentiment → search_grounded_analysis(type="sentiment")
    - Compare → compare_stocks
+   - General → quick_search_query
 3. Synthesize & respond
+
+⚡ DEFAULT TO search_grounded_analysis - it has real-time Google Search!
 """
 
 __all__ = ['TOOL_DESCRIPTIONS', 'TOOL_SELECTION_GUIDE', 'USAGE_EXAMPLES', 'TOOL_CATEGORIES', 'DECISION_TREE']

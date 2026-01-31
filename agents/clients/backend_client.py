@@ -319,18 +319,66 @@ class BackendClient:
         except httpx.HTTPError as e:
             raise Exception(f"News summarization API error: {str(e)}")
 
-    async def query_gemini(self, prompt: str) -> Dict:
+    async def analyze_combined_news(
+        self,
+        symbol: str,
+        company_name: str,
+        newsapi_articles: List[Dict],
+        mint_articles: List[Dict]
+    ) -> Dict:
+        """
+        Analyze combined news from NewsAPI and LiveMint using Gemini AI
+        
+        Args:
+            symbol: Stock ticker symbol
+            company_name: Company name
+            newsapi_articles: List of articles from NewsAPI
+            mint_articles: List of articles from LiveMint
+        
+        Returns:
+            Dictionary with comprehensive news analysis:
+            {
+                "symbol": "RELIANCE.NS",
+                "company_name": "Reliance Industries",
+                "analysis": "AI analysis text",
+                "sentiment_summary": "positive",
+                "sentiment_score": 0.65,
+                "articles_analyzed": 6,
+                "top_headlines": ["...", "..."]
+            }
+        """
+        try:
+            payload = {
+                "symbol": symbol,
+                "company_name": company_name,
+                "newsapi_articles": newsapi_articles[:3],
+                "mint_articles": mint_articles[:3]
+            }
+            
+            response = await self.client.post(
+                f"{self.base_url}/api/analyze-news",
+                json=payload,
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPError as e:
+            raise Exception(f"News analysis API error: {str(e)}")
+
+    async def query_gemini(self, prompt: str, use_search: bool = False) -> Dict:
         """
         Query Gemini via backend helper
         
         Args:
             prompt: Prompt string
+            use_search: Enable Google Search grounding
         
         Returns:
-            Dictionary with response text
+            Dictionary with response text (and sources if search enabled)
         """
         try:
-            payload = {"prompt": prompt}
+            payload = {"prompt": prompt, "use_search": use_search}
             response = await self.client.post(
                 f"{self.base_url}/api/gemini-query",
                 json=payload,
@@ -340,6 +388,43 @@ class BackendClient:
             return response.json()
         except httpx.HTTPError as e:
             raise Exception(f"Gemini query API error: {str(e)}")
+
+    async def search_analysis(
+        self,
+        symbol: str,
+        company_name: str,
+        query_type: str = "analysis",
+        time_frame: str = "3mo"
+    ) -> Dict:
+        """
+        Perform stock analysis using Gemini with Google Search grounding.
+        Retrieves real-time news and market data via search.
+        
+        Args:
+            symbol: Stock ticker symbol
+            company_name: Company name
+            query_type: Type of analysis (analysis, news, sentiment, recommendation)
+            time_frame: Time frame for analysis
+        
+        Returns:
+            Dictionary with analysis, sources, and recommendation
+        """
+        try:
+            payload = {
+                "symbol": symbol,
+                "company_name": company_name,
+                "query_type": query_type,
+                "time_frame": time_frame
+            }
+            response = await self.client.post(
+                f"{self.base_url}/api/search-analysis",
+                json=payload,
+                headers=self._get_headers()
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise Exception(f"Search analysis API error: {str(e)}")
     
     def __del__(self):
         """Cleanup on deletion"""

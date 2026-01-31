@@ -22,19 +22,20 @@ class NewsRequest(BaseModel):
 
 
 class ChartRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]{1,5}$")
+    symbol: str = Field(..., min_length=1, max_length=20)
     data: list[dict] = Field(..., min_items=1, max_items=1000)
     
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        if not re.match(r"^[A-Z]{1,5}$", v):
-            raise ValueError('Invalid stock symbol. Must be 1-5 uppercase letters')
-        return v.upper()
+        v = v.strip().upper()
+        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NSE|BO|L|HK|T))?$", v):
+            raise ValueError('Invalid stock symbol format')
+        return v
 
 
 class RiskAnalysisRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]{1,5}$")
+    symbol: str = Field(..., min_length=1, max_length=20)
     data: list[dict] = Field(..., min_items=1, max_items=1000)
     
     @field_validator('symbol')
@@ -72,3 +73,37 @@ class MarketMakerRequest(BaseModel):
 
 class GeminiQueryRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=100000)
+    use_search: bool = Field(default=False, description="Enable Google Search grounding")
+
+
+class GeminiSearchAnalysisRequest(BaseModel):
+    """Request model for Gemini search-grounded stock analysis"""
+    symbol: str = Field(..., min_length=1, max_length=20)
+    company_name: str = Field(..., min_length=1, max_length=100)
+    query_type: str = Field(default="analysis", description="Type: analysis, news, sentiment, recommendation")
+    time_frame: str = Field(default="3mo", description="Time frame for analysis")
+    
+    @field_validator('symbol')
+    @classmethod
+    def validate_symbol(cls, v):
+        v = v.strip().upper()
+        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NS|BO|L|HK|T))?$", v):
+            raise ValueError('Invalid stock symbol format')
+        return v
+
+
+class NewsAnalysisRequest(BaseModel):
+    """Request model for combined news analysis"""
+    symbol: str = Field(..., min_length=1, max_length=20)
+    company_name: str = Field(..., min_length=1, max_length=100)
+    newsapi_articles: list[dict] = Field(default_factory=list, max_length=10)
+    mint_articles: list[dict] = Field(default_factory=list, max_length=10)
+    
+    @field_validator('symbol')
+    @classmethod
+    def validate_symbol(cls, v):
+        # Allow symbols like RELIANCE.NSE, TCS.BO, AAPL
+        v = v.strip().upper()
+        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NSE|BO|L|HK|T))?$", v):
+            raise ValueError('Invalid stock symbol format')
+        return v

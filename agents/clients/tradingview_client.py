@@ -1,26 +1,19 @@
 """
 TradingView Client
-Fetches real-time market data, technical indicators, and company information
+Fetches real-time market data using tradingview-ta (unofficial API)
 """
 
-import requests
-import os
+from tradingview_ta import TA_Handler, Interval, Exchange
 from typing import Dict, List, Optional
 from datetime import datetime
-
 
 class TradingViewClient:
     """
     TradingView data client
-    Provides real-time quotes, technical analysis, and market data
+    Provides real-time quotes and technical analysis using tradingview-ta
     """
     
     def __init__(self):
-        self.search_url = os.getenv(
-            "TRADINGVIEW_API_URL",
-            "https://symbol-search.tradingview.com/symbol_search/"
-        )
-        self.quote_url = "https://scanner.tradingview.com/symbol"
         self.cache = {}
         self.cache_ttl = 300
     
@@ -36,117 +29,81 @@ class TradingViewClient:
         """Set cache with current timestamp"""
         self.cache[key] = (data, datetime.now().timestamp())
     
-    def search_symbol(self, query: str) -> Optional[Dict]:
+    def _convert_symbol(self, symbol: str) -> tuple[str, str]:
         """
-        Search for a ticker symbol
-        
-        Args:
-            query: Company name or ticker symbol
-        
-        Returns:
-            Dictionary with symbol info or None if not found
+        Convert symbol to TradingView format (SCREENER, EXCHANGE, SYMBOL)
+        Handles .NS -> NSE, .BO -> BSE conversion
         """
-        try:
-            params = {
-                'text': query,
-                'type': 'stock',
-                'exchange': '',
-                'lang': 'en'
-            }
+        screener = "india"
+        exchange = "NSE"  
+        ticker = symbol.upper()
+        
+        if ".NSE" in ticker:
+            ticker = ticker.replace(".NSE", "")
+            exchange = "NSE"
+        elif ".BSE" in ticker:
+            ticker = ticker.replace(".BSE", "")
+            exchange = "BSE"
+        elif ".NS" in ticker:
+            ticker = ticker.replace(".NS", "")
+            exchange = "NSE"
+        elif ".BO" in ticker:
+            ticker = ticker.replace(".BO", "")
+            exchange = "BSE"
             
-            response = requests.get(self.search_url, params=params, timeout=5)
-            if response.status_code != 200:
-                raise Exception(f"Search API returned status {response.status_code}")
-            try:
-                data = response.json()
-            except ValueError as e:
-                raise Exception(f"Invalid JSON response: {str(e)}")
-            
-            if data and len(data) > 0:
-                best_match = data[0]
-                return {
-                    'symbol': best_match.get('symbol', ''),
-                    'description': best_match.get('description', ''),
-                    'exchange': best_match.get('exchange', ''),
-                    'type': best_match.get('type', ''),
-                    'ticker': best_match.get('symbol', '').split(':')[-1]
-                }
-            
-            return None
-            
-        except Exception as e:
-            print(f"[TRADINGVIEW SEARCH ERROR] {str(e)}")
-            return None
-    
-    def get_quote(self, symbol: str, exchange: str = "NSE") -> Dict:
+        return screener, exchange, ticker
+
+    def get_quote(self, symbol: str) -> Dict:
         """
         Get real-time quote data for a symbol
         
         Args:
-            symbol: Stock ticker (e.g., "SBIN", "AAPL")
-            exchange: Exchange code (NSE, BSE, NASDAQ, NYSE, etc.)
+            symbol: Stock ticker (e.g., "SBIN.NS", "RELIANCE.BO")
         
         Returns:
-            Dictionary with current price, market cap, P/E ratio, etc.
+            Dictionary with current price and other metrics
         """
-        cache_key = f"quote_{exchange}:{symbol}"
+        cache_key = f"quote_{symbol}"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
         
         try:
-            full_symbol = f"{exchange}:{symbol}"
-            url = f"{self.quote_url}"
+            screener, exchange, ticker = self._convert_symbol(symbol)
             
-            params = {
-                'symbol': full_symbol,
-                'fields': ','.join([
-                    'close',
-                    'change',
-                    'change_percent',
-                    'high',
-                    'low',
-                    'open',
-                    'volume',
-                    'market_cap_basic',
-                    'price_earnings_ttm',
-                    'earnings_per_share_basic_ttm',
-                    'number_of_employees',
-                    'sector',
-                    'description',
-                    'name',
-                    'type',
-                    'currency',
-                    'exchange'
-                ])
-            }
+            handler = TA_Handler(
+                symbol=ticker,
+                screener=screener,
+                exchange=exchange,
+                interval=Interval.INTERVAL_1_DAY
+            )
             
-            response = requests.get(url, params=params, timeout=10)
+            analysis = handler.get_analysis()
             
-            if response.status_code != 200:
-                raise Exception(f"API returned status {response.status_code}")
+            # Extract data
+            current_price = analysis.indicators.get("close", 0)
+            open_price = analysis.indicators.get("open", 0)
+            high = analysis.indicators.get("high", 0)
+            low = analysis.indicators.get("low", 0)
+            volume = analysis.indicators.get("volume", 0)
+            change = analysis.indicators.get("change", 0)
             
-            data = response.json()
-            
+            # Calculate change percent
+            prev_close = current_price - change 
+            change_percent = (change / prev_close * 100) if prev_close else 0
+
             result = {
                 "symbol": symbol.upper(),
-                "full_symbol": full_symbol,
-                "current_price": data.get("close") or 0,
-                "open": data.get("open") or 0,
-                "high": data.get("high") or 0,
-                "low": data.get("low") or 0,
-                "change": data.get("change") or 0,
-                "change_percent": data.get("change_percent") or 0,
-                "volume": data.get("volume") or 0,
-                "market_cap": data.get("market_cap_basic") or 0,
-                "pe_ratio": data.get("price_earnings_ttm") or 0,
-                "eps": data.get("earnings_per_share_basic_ttm") or 0,
-                "company_name": data.get("name") or symbol,
-                "description": data.get("description") or "N/A",
-                "sector": data.get("sector") or "Unknown",
-                "employees": data.get("number_of_employees") or 0,
-                "currency": data.get("currency") or "USD",
-                "exchange": data.get("exchange") or exchange,
+                "current_price": current_price,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "change": change,
+                "change_percent": round(change_percent, 2),
+                "volume": volume,
+                "company_name": ticker, 
+                "exchange": exchange,
+                "currency": "INR", 
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -157,86 +114,45 @@ class TradingViewClient:
             raise Exception(f"Failed to fetch quote for {symbol}: {str(e)}")
     
     def get_current_price(self, symbol: str) -> Dict:
-        """
-        Get current stock price and basic information
-        Uses TradingView search to resolve exchange and ticker
-        
-        Args:
-            symbol: Stock ticker with optional exchange suffix (e.g., "AAPL", "SBIN.NS")
-        
-        Returns:
-            Dictionary with current price, market cap, P/E ratio, etc.
-        """
-        search_result = self.search_symbol(symbol)
-        if search_result:
-            exch = search_result.get('exchange', '')
-            tick = search_result.get('ticker', '')
-            if not exch or not tick:
-                raise Exception("Search result missing exchange or ticker")
-            return self.get_quote(tick, exch)
-        
-        raise Exception(f"Unable to resolve exchange for symbol '{symbol}'")
+        """Alias for get_quote consistent with interface"""
+        return self.get_quote(symbol)
     
-    def get_technical_indicators(self, symbol: str, exchange: str = "NSE") -> Dict:
+    def get_technical_indicators(self, symbol: str) -> Dict:
         """
         Get technical analysis indicators
-        
-        Args:
-            symbol: Stock ticker
-            exchange: Exchange code
-        
-        Returns:
-            Dictionary with RSI, MACD, moving averages, etc.
         """
-        cache_key = f"technical_{exchange}:{symbol}"
+        cache_key = f"technical_{symbol}"
         cached = self._get_cached(cache_key)
         if cached:
             return cached
         
         try:
-            full_symbol = f"{exchange}:{symbol}"
+            screener, exchange, ticker = self._convert_symbol(symbol)
             
-            params = {
-                'symbol': full_symbol,
-                'fields': ','.join([
-                    'RSI',
-                    'RSI[1]',
-                    'Stoch.K',
-                    'Stoch.D',
-                    'MACD.macd',
-                    'MACD.signal',
-                    'ADX',
-                    'ATR',
-                    'SMA20',
-                    'SMA50',
-                    'SMA100',
-                    'SMA200',
-                    'EMA20',
-                    'EMA50',
-                    'EMA100',
-                    'EMA200',
-                    'BB.upper',
-                    'BB.lower',
-                ])
-            }
+            handler = TA_Handler(
+                symbol=ticker,
+                screener=screener,
+                exchange=exchange,
+                interval=Interval.INTERVAL_1_DAY
+            )
             
-            response = requests.get(self.quote_url, params=params, timeout=10)
-            data = response.json()
+            analysis = handler.get_analysis()
+            indicators = analysis.indicators
             
             result = {
                 "symbol": symbol.upper(),
-                "rsi": data.get("RSI", 0),
-                "macd": data.get("MACD.macd", 0),
-                "macd_signal": data.get("MACD.signal", 0),
-                "adx": data.get("ADX", 0),
-                "atr": data.get("ATR", 0),
-                "sma_20": data.get("SMA20", 0),
-                "sma_50": data.get("SMA50", 0),
-                "sma_200": data.get("SMA200", 0),
-                "ema_20": data.get("EMA20", 0),
-                "ema_50": data.get("EMA50", 0),
-                "bollinger_upper": data.get("BB.upper", 0),
-                "bollinger_lower": data.get("BB.lower", 0),
+                "rsi": indicators.get("RSI", 0),
+                "macd": indicators.get("MACD.macd", 0),
+                "macd_signal": indicators.get("MACD.signal", 0),
+                "adx": indicators.get("ADX", 0),
+                "atr": indicators.get("ATR", 0),
+                "sma_20": indicators.get("SMA20", 0),
+                "sma_50": indicators.get("SMA50", 0),
+                "sma_200": indicators.get("SMA200", 0),
+                "ema_20": indicators.get("EMA20", 0),
+                "ema_50": indicators.get("EMA50", 0),
+                "bollinger_upper": indicators.get("BB.upper", 0),
+                "bollinger_lower": indicators.get("BB.lower", 0),
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -246,30 +162,10 @@ class TradingViewClient:
         except Exception as e:
             print(f"[TRADINGVIEW] Technical indicators error: {str(e)}")
             return {}
-    
-    def get_market_overview(self, symbols: List[str]) -> Dict[str, Dict]:
-        """
-        Get data for multiple stocks at once
-        
-        Args:
-            symbols: List of stock ticker symbols
-        
-        Returns:
-            Dictionary mapping symbol to stock data
-        """
-        results = {}
-        for symbol in symbols:
-            try:
-                results[symbol] = self.get_current_price(symbol)
-            except Exception as e:
-                results[symbol] = {"error": str(e)}
-        
-        return results
-    
+            
     def clear_cache(self):
         """Clear all cached data"""
         self.cache.clear()
-
 
 _tradingview_client = None
 
