@@ -34,6 +34,38 @@
 *   **Data**: `yfinance`, `tradingview-ta`, `newsapi-python`.
 *   **Analysis**: `pandas`, `numpy`, `scipy`.
 
+## 🔄 Execution Flow
+
+```mermaid
+graph TD
+    A[User Query] -->|Input| B(FinAgent Controller)
+    B --> C{Intent Analysis}
+    C -->|Identify Symbol| D[Symbol Resolution]
+    D -->|.NSE/.BSE Handling| E[Tool Router]
+    
+    E -->|Price Data| F[Stock Price Tool]
+    F -->|Try Yahoo| G[Yahoo Finance Client]
+    G -.->|429/Error| H[TradingView Client]
+    
+    E -->|News/Sentiment| I[News Analysis Tool]
+    I --> J[NewsAPI + LiveMint]
+    
+    E -->|Risk/Prediction| K[Backend API]
+    K --> L[Quant Models]
+    
+    F --> M[Data Aggregation]
+    H --> M
+    J --> M
+    L --> M
+    
+    M -->|Context| N[Gemini LLM]
+    N -->|Generate Insight| O[Final Response]
+    
+    style G fill:#ffcccc,stroke:#333
+    style H fill:#ccffcc,stroke:#333
+    style N fill:#e6f3ff,stroke:#333
+```
+
 ## 🚀 Getting Started
 
 ### Prerequisites
