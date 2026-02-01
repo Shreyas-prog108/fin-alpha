@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from typing import Dict, List, Tuple, Optional
 import json
 
@@ -24,17 +24,41 @@ class FinAgent:
     Main Financial Analysis Agent using LangGraph
     """
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-        model=config.GEMINI_MODEL,
-        temperature=config.LLM_TEMPERATURE,
-        max_tokens=config.MAX_TOKENS,
-        google_api_key=config.GEMINI_API_KEY
+        self.llm = ChatGroq(
+            model=config.GROQ_MODEL,
+            temperature=config.LLM_TEMPERATURE,
+            max_tokens=config.MAX_TOKENS,
+            api_key=config.GROQ_API_KEY,
+            model_kwargs={"reasoning_effort": "medium"}
         )
         self.graph=self._build_graph()
-        self.ticker_cache = {}
-        self.symbol_metadata_cache = {}
         self.tradingview = get_tradingview_client()
         self.backend = get_backend_client()
+
+    async def _safe_generate(self, prompt: str, state: AgentState) -> str:
+        """
+        Quota-safe LLM generation wrapper.
+        Enforces MAX_LLM_CALLS_PER_QUERY and prevents free-tier usage metrics.
+        """
+        current_usage = state.get("llm_call_count", 0)
+        if current_usage >= config.MAX_LLM_CALLS_PER_QUERY:
+             print(f"[QUOTA GUARD] Halting: Limit of {config.MAX_LLM_CALLS_PER_QUERY} calls reached.")
+             return "Quota limit reached. stopping execution."
+
+        state["llm_call_count"] = current_usage + 1
+        print(f"[GROQ PAID TIER] Calling {config.GROQ_MODEL} (Call {state['llm_call_count']}/{config.MAX_LLM_CALLS_PER_QUERY})")
+        
+        try:
+            response = await self.llm.ainvoke(prompt)
+            content = response.content
+            if isinstance(content, list):
+                content = " ".join(str(item) for item in content)
+            return str(content)
+        except Exception as e:
+             if "429" in str(e):
+                 print(f"[QUOTA ERROR] 429 Hit. Stopping immediately to prevent free-tier penalty.")
+                 return "Error: Rate limit hit."
+             raise e
 
     def _normalize_timeframe(self, timeframe: Optional[str]) -> str:
         allowed = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}
@@ -86,7 +110,7 @@ class FinAgent:
             return "general"
         return c
 
-    def _infer_timeframe_from_query(
+    async def _infer_timeframe_from_query(
         self,
         query: str,
         intent: str,
@@ -108,8 +132,7 @@ Guidance:
 - Very long-term/retirement -> 2y or 5y
 """
         try:
-            response = self.llm.invoke(prompt)
-            content = response.content
+            content = await self._safe_generate(prompt, {"llm_call_count": 0}) # Helper usage, not main flow
             if isinstance(content, list):
                 content = " ".join(str(item) for item in content)
             if not isinstance(content, str):
@@ -146,9 +169,6 @@ Guidance:
             name = symbol_metadata[symbol].get("name")
             if name:
                 return name
-        cached = self.symbol_metadata_cache.get(symbol, {})
-        if cached.get("name"):
-            return cached["name"]
         return symbol.replace(".NSE", "").replace(".BO", "")
 
     def _apply_exchange_suffix(self, ticker: str, exchange: str) -> str:
@@ -202,7 +222,7 @@ Guidance:
     def _resolve_symbol_fallback(self, query: str) -> Tuple[Optional[str], Dict]:
         """
         Minimal fallback for symbol resolution.
-        Only used when Gemini doesn't provide yahoo_symbols.
+        Only used when LLM doesn't provide yahoo_symbols.
         Just formats the input - no hardcoded stock lists.
         """
         query_clean = query.strip()
@@ -225,26 +245,15 @@ Guidance:
     def resolve_symbol(self, query: str) -> Tuple[Optional[str], Dict]:
         """
         Minimal symbol resolution fallback.
-        Gemini should handle all symbol resolution in parse_query_node.
+        LLM should handle all symbol resolution in parse_query_node.
         This is only used as a last resort.
         """
         query_clean = query.strip()
         if not query_clean:
             return None, {}
         
-
-        cache_key = query_clean.lower()
-        if cache_key in self.ticker_cache:
-            symbol = self.ticker_cache[cache_key]
-            print(f"[CACHE HIT] '{query_clean}' -> {symbol}")
-            return symbol, self.symbol_metadata_cache.get(symbol, {})
-
-
         symbol, metadata = self._resolve_symbol_fallback(query_clean)
         if symbol:
-            self.ticker_cache[cache_key] = symbol
-            if metadata:
-                self.symbol_metadata_cache[symbol] = metadata
             print(f"[FALLBACK] '{query_clean}' -> {symbol}")
             return symbol, metadata
 
@@ -279,7 +288,7 @@ Guidance:
     async def parse_query_node(self,state:AgentState)->AgentState:
         """
         Node 1: Parse user query
-        Use Gemini to extract stock symbols directly in Yahoo Finance format
+        Use Groq to extract stock symbols directly in Yahoo Finance format
         """   
         query=state["user_query"]
         prompt=f"""You are a financial assistant expert in stock markets. Analyze this query and extract information.
@@ -311,12 +320,11 @@ Return ONLY this JSON format (no other text):
 {{"yahoo_symbols": ["SBIN.NSE"], "company_names": ["State Bank of India"], "query_type": "investment_decision", "intent": "analyze SBI stock", "time_frame": "3mo", "sentiment_focus": "unknown", "news_category": "general"}}
 """
         try:
-            response_payload = await self.backend.query_gemini(prompt)
+            response_payload = await self.backend.query_groq(prompt)
             content = response_payload.get("response", "")
         except Exception as e:
-            print(f"[GEMINI BACKEND ERROR] {str(e)}")
-            response = self.llm.invoke(prompt)
-            content = response.content
+            print(f"[GROQ BACKEND ERROR] {str(e)}")
+            content = await self._safe_generate(prompt, state)
         import re
         import json
         
@@ -353,7 +361,7 @@ Return ONLY this JSON format (no other text):
                 if raw_time_frame:
                     state["time_frame"] = self._normalize_timeframe(raw_time_frame)
                 else:
-                    state["time_frame"] = self._infer_timeframe_from_query(
+                    state["time_frame"] = await self._infer_timeframe_from_query(
                         query, state["intent"], state["sentiment_focus"]
                     )
                 
@@ -368,8 +376,8 @@ Return ONLY this JSON format (no other text):
                             pass 
                         name = company_names[i] if i < len(company_names) else symbol
                         resolved_symbols.append(symbol)
-                        symbol_metadata[symbol] = {"name": name, "source": "gemini"}
-                        print(f"[GEMINI] Resolved: {name} -> {symbol}")
+                        symbol_metadata[symbol] = {"name": name, "source": "groq"}
+                        print(f"[GROQ] Resolved: {name} -> {symbol}")
                     
                     state["symbols"] = resolved_symbols
                     state["symbol_metadata"] = symbol_metadata
@@ -403,7 +411,7 @@ Return ONLY this JSON format (no other text):
                         state["symbol_metadata"] = symbol_metadata
                 else:
 
-                    print(f"[FALLBACK] No symbols in Gemini response, searching query...")
+                    print(f"[FALLBACK] No symbols in LLM response, searching query...")
                     symbol, metadata = self.resolve_symbol(query)
                     state["symbols"] = [symbol] if symbol else []
                     if symbol and metadata:
@@ -458,7 +466,7 @@ Return ONLY this JSON format (no other text):
             state["intent"] = query
             state["sentiment_focus"] = self._normalize_sentiment_focus(None)
             state["news_category"] = self._normalize_news_category(None)
-            state["time_frame"] = self._infer_timeframe_from_query(
+            state["time_frame"] = await self._infer_timeframe_from_query(
                 query, state["intent"], state["sentiment_focus"]
             )
         
@@ -596,7 +604,7 @@ Return ONLY this JSON format (no other text):
         state["step_count"] += 1
         return state
     
-    def run_subagents_node(self, state: AgentState) -> AgentState:
+    async def run_subagents_node(self, state: AgentState) -> AgentState:
         """
         Node 5: Run specialized sub-agent analyses
         """
@@ -647,6 +655,9 @@ Return ONLY this JSON format (no other text):
 
         reports = {}
         for agent_name, prompt in subagent_prompts.items():
+             # Quota guard check before preparation
+            if state.get("llm_call_count", 0) >= config.MAX_LLM_CALLS_PER_QUERY:
+                break
             data_blob = json.dumps(agent_inputs.get(agent_name, {}), indent=2)
             agent_prompt = f"""{prompt.strip()}
 
@@ -659,8 +670,7 @@ Data:
 {data_blob}
 
 Return concise bullet points (3-5) with actionable insights."""
-            response = self.llm.invoke(agent_prompt)
-            content = response.content
+            content = await self._safe_generate(agent_prompt, state)
             if isinstance(content, list):
                 content = " ".join(str(item) for item in content)
             elif not isinstance(content, str):
@@ -671,7 +681,7 @@ Return concise bullet points (3-5) with actionable insights."""
         state["step_count"] += 1
         return state
 
-    def synthesize_node(self, state: AgentState) -> AgentState:
+    async def synthesize_node(self, state: AgentState) -> AgentState:
         """Node 6: Synthesize results"""
         import json
         tool_results = state["tool_results"]
@@ -743,8 +753,7 @@ CRITICAL REQUIREMENTS:
 IMPORTANT:
 - Always use the CORRECT currency symbol in all monetary values"""
         
-        response=self.llm.invoke(prompt)
-        content=response.content
+        content = await self._safe_generate(prompt, state)
         if isinstance(content, list):
             content = " ".join(str(item) for item in content)
         elif not isinstance(content, str):

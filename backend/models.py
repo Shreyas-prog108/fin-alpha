@@ -71,13 +71,12 @@ class MarketMakerRequest(BaseModel):
     max_spread: Optional[float] = Field(None, gt=0, le=1000000)
 
 
-class GeminiQueryRequest(BaseModel):
+class GroqQueryRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=100000)
-    use_search: bool = Field(default=False, description="Enable Google Search grounding")
 
 
-class GeminiSearchAnalysisRequest(BaseModel):
-    """Request model for Gemini search-grounded stock analysis"""
+class SearchAnalysisRequest(BaseModel):
+    """Request model for stock analysis"""
     symbol: str = Field(..., min_length=1, max_length=20)
     company_name: str = Field(..., min_length=1, max_length=100)
     query_type: str = Field(default="analysis", description="Type: analysis, news, sentiment, recommendation")
@@ -87,8 +86,8 @@ class GeminiSearchAnalysisRequest(BaseModel):
     @classmethod
     def validate_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NS|BO|L|HK|T))?$", v):
-            raise ValueError('Invalid stock symbol format')
+        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NS|NSE|BO|L|HK|T))?$", v):
+            raise ValueError("Invalid stock symbol format")
         return v
 
 

@@ -4,6 +4,7 @@ Fetches real-time market data using tradingview-ta (unofficial API)
 """
 
 from tradingview_ta import TA_Handler, Interval, Exchange
+import requests
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -14,20 +15,8 @@ class TradingViewClient:
     """
     
     def __init__(self):
-        self.cache = {}
-        self.cache_ttl = 300
-    
-    def _get_cached(self, key: str) -> Optional[Dict]:
-        """Get cached data if not expired"""
-        if key in self.cache:
-            data, timestamp = self.cache[key]
-            if (datetime.now().timestamp() - timestamp) < self.cache_ttl:
-                return data
-        return None
-    
-    def _set_cache(self, key: str, data: Dict):
-        """Set cache with current timestamp"""
-        self.cache[key] = (data, datetime.now().timestamp())
+        pass
+
     
     def _convert_symbol(self, symbol: str) -> tuple[str, str]:
         """
@@ -63,10 +52,7 @@ class TradingViewClient:
         Returns:
             Dictionary with current price and other metrics
         """
-        cache_key = f"quote_{symbol}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
+
         
         try:
             screener, exchange, ticker = self._convert_symbol(symbol)
@@ -107,7 +93,6 @@ class TradingViewClient:
                 "timestamp": datetime.now().isoformat()
             }
             
-            self._set_cache(cache_key, result)
             return result
             
         except Exception as e:
@@ -121,10 +106,7 @@ class TradingViewClient:
         """
         Get technical analysis indicators
         """
-        cache_key = f"technical_{symbol}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
+
         
         try:
             screener, exchange, ticker = self._convert_symbol(symbol)
@@ -156,17 +138,65 @@ class TradingViewClient:
                 "timestamp": datetime.now().isoformat()
             }
             
-            self._set_cache(cache_key, result)
             return result
             
         except Exception as e:
             print(f"[TRADINGVIEW] Technical indicators error: {str(e)}")
             return {}
             
-    def clear_cache(self):
-        """Clear all cached data"""
-        self.cache.clear()
 
+
+    def search_symbol(self, query: str) -> Dict:
+        """
+        Search for symbol using TradingView public API (v3)
+        """
+        try:
+            url = "https://symbol-search.tradingview.com/symbol_search/v3/"
+            params = {
+                "text": query,
+                "hl": "1",
+                "exchange": "",
+                "lang": "en",
+                "search_type": "stocks",
+                "domain": "production"
+            }
+            resp = requests.get(url, params=params, timeout=5)
+            data = resp.json()
+            
+            if not data:
+                return {}
+            
+            # Prefer NSE/BSE
+            best = data[0]
+            for item in data:
+                ex = item.get("exchange", "")
+                if ex in ["NSE", "BSE"]:
+                    best = item
+                    break
+            
+            symbol = best["symbol"]
+            exchange = best.get("exchange", "NSE")
+            description = best.get("description", symbol)
+            
+            # Format
+            if exchange == "NSE":
+                full_symbol = f"{symbol}.NSE"
+            elif exchange == "BSE":
+                full_symbol = f"{symbol}.BO"
+            else:
+                 full_symbol = symbol
+            
+            return {
+                "symbol": full_symbol,
+                "ticker": symbol,
+                "name": description,
+                "exchange": exchange,
+                "source": "tradingview",
+                "type": best.get("type", "stock")
+            }
+        except Exception as e:
+            print(f"[TRADINGVIEW SEARCH ERROR] {str(e)}")
+            return {}
 _tradingview_client = None
 
 def get_tradingview_client() -> TradingViewClient:

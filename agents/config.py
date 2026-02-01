@@ -13,17 +13,18 @@ logger = logging.getLogger(__name__)
 class AgentConfig(BaseSettings):
     """Agent configuration with security validation"""
     
-    GEMINI_API_KEY: str = Field(...)
+    GROQ_API_KEY: str = Field(...)
     NEWSAPI_KEY: Optional[str] = Field(None)
     NEWSAPI_URL: str = Field("https://newsapi.org/v2")
     BACKEND_URL: Optional[str] = Field("http://localhost:8000")   
     API_KEY: Optional[str] = Field(None) 
-    GEMINI_MODEL: str = Field("gemini-3-flash-preview")
+    GROQ_MODEL: str = Field("gpt-oss-20b")
     LLM_TEMPERATURE: float = Field(1.0, ge=0.0, le=2.0)
     MAX_TOKENS: int = Field(2048, ge=1, le=100000)
     MAX_ITERATIONS: int = Field(5, ge=1, le=100)
     TOOL_TIMEOUT: int = Field(60, ge=5, le=600)
-    ENABLE_CACHING: bool = Field(True)
+    MAX_LLM_CALLS_PER_QUERY: int = Field(10, ge=1, le=50)
+
     LOG_LEVEL: str = Field("INFO")
     ENABLE_DEBUG: bool = Field(False)
     
@@ -40,11 +41,11 @@ class AgentConfig(BaseSettings):
             raise ValueError("BACKEND_URL must start with http:// or https://")
         return v
     
-    @field_validator('GEMINI_API_KEY')
+    @field_validator('GROQ_API_KEY')
     @classmethod
-    def validate_gemini_key(cls, v):
+    def validate_groq_key(cls, v):
         if not v or len(v) == 0:
-            raise ValueError("GEMINI_API_KEY must be set")
+            raise ValueError("GROQ_API_KEY must be set")
         return v
     
     @field_validator('LOG_LEVEL')

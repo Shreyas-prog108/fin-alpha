@@ -2,18 +2,18 @@
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green)
-![Gemini](https://img.shields.io/badge/AI-Google%20Gemini-orange)
+![Groq](https://img.shields.io/badge/AI-Groq-orange)
 ![License](https://img.shields.io/badge/License-MIT-purple)
 
 **Fin-Alpha** is a state-of-the-art financial analysis agent that combines real-time market data, advanced risk metrics, and Generative AI to provide actionable investment insights.
 
-> **🚀Powered by Google Gemini**
+> **🚀 Powered by Groq+GPT-oss20b**
 
 ## ✨ Key Features
 
 *   **🤖 Agentic Interface**: Chat naturally with `FinAgent` to analyze stocks, ask for recommendations, and get explained insights.
 *   **📊 Comprehensive Analysis**:
-    *   **Real-time Data**: Hybrid fetching via Yahoo Finance and TradingView (Unofficial) for robustness.
+    *   **Real-time Data**: Hybrid fetching via TradingView (Primary) and Yahoo Finance (Fallback) for robustness.
     *   **Technical Indicators**: RSI, MACD, Bollinger Bands, Moving Averages.
     *   **Fundamental Data**: P/E, Market Cap, EPS, Sector comparison.
 *   **⚖️ Risk Intelligence**:
@@ -30,40 +30,50 @@
 ## 🛠️ Tech Stack
 
 *   **Backend**: FastAPI, Uvicorn
-*   **AI/LLM**: Google Gemini (via `google-generativeai`), LangGraph for agent orchestration.
-*   **Data**: `yfinance`, `tradingview-ta`, `newsapi-python`.
+*   **AI/LLM**: Groq API (`openai/gpt-oss-120b`), LangGraph for agent orchestration.
+*   **Data**: `tradingview-ta` (Primary), `yfinance` (Fallback), `newsapi-python`.
 *   **Analysis**: `pandas`, `numpy`, `scipy`.
 
 ## 🔄 Execution Flow
 
 ```mermaid
 graph TD
-    A[User Query] -->|Input| B(FinAgent Controller)
-    B --> C{Intent Analysis}
-    C -->|Identify Symbol| D[Symbol Resolution]
-    D -->|.NSE/.BSE Handling| E[Tool Router]
+    A[User Query] -->|Input| B(FinAgent - LangGraph)
+    B -->|Parse Query| C[Groq LLM]
+    C -->|Extract Intent & Symbols| D{Symbol Resolution}
     
-    E -->|Price Data| F[Stock Price Tool]
-    F -->|Try Yahoo| G[Yahoo Finance Client]
-    G -.->|429/Error| H[TradingView Client]
+    D -->|Search Symbol| E[TradingView Search API]
+    E -->|Return Symbol| F[Tool Router]
     
-    E -->|News/Sentiment| I[News Analysis Tool]
-    I --> J[NewsAPI + LiveMint]
+    F -->|get_stock_price| G[TradingView Client]
+    G -->|TA_Handler| G1[Real-time Quote]
+    G1 -.->|Fallback on Error| H[Yahoo Finance]
     
-    E -->|Risk/Prediction| K[Backend API]
-    K --> L[Quant Models]
+    F -->|get_stock_news| I[News Aggregator]
+    I -->|Fetch| J1[NewsAPI]
+    I -->|Scrape| J2[LiveMint]
     
-    F --> M[Data Aggregation]
+    F -->|analyze_risk/predict_price| K[Backend API]
+    K -->|Calculate| L1[Risk Analysis]
+    K -->|Forecast| L2[Price Prediction]
+    
+    G1 --> M[Context Assembly]
     H --> M
-    J --> M
-    L --> M
+    J1 --> M
+    J2 --> M
+    L1 --> M
+    L2 --> M
     
-    M -->|Context| N[Gemini LLM]
-    N -->|Generate Insight| O[Final Response]
+    M -->|Aggregated Data| N[Groq LLM]
+    N -->|reasoning_effort: medium| O[Synthesize Analysis]
+    O -->|Final Report| P[User Response]
     
-    style G fill:#ffcccc,stroke:#333
-    style H fill:#ccffcc,stroke:#333
-    style N fill:#e6f3ff,stroke:#333
+    style E fill:#ccffcc,stroke:#333,stroke-width:2px
+    style G fill:#ccffcc,stroke:#333,stroke-width:2px
+    style H fill:#ffcccc,stroke:#333
+    style C fill:#e6f3ff,stroke:#333,stroke-width:2px
+    style N fill:#e6f3ff,stroke:#333,stroke-width:2px
+    style K fill:#fff4cc,stroke:#333
 ```
 
 ## 🚀 Getting Started
@@ -71,7 +81,7 @@ graph TD
 ### Prerequisites
 
 *   Python 3.8+
-*   A Google Cloud Project with Gemini API access.
+*   A Groq API key (get one at [console.groq.com](https://console.groq.com))
 
 ### Installation
 
@@ -94,11 +104,12 @@ graph TD
     ```
 
 3.  **Configure Environment Variables**:
-    Create a `.env` file (automatically created by `finalpha` or copy `.env.example`):
+    Create a `.env.local` file:
     ```ini
-    GEMINI_API_KEY=your_gemini_api_key_here
-    NEWS_API_KEY=your_newsapi_key_here (Optional)
-    ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8000
+    GROQ_API_KEY=your_groq_api_key_here
+    GROQ_MODEL=openai/gpt-oss-120b
+    NEWSAPI_KEY=your_newsapi_key_here
+    BACKEND_URL=http://localhost:8000
     ```
 
 ## 🖥️ Usage
@@ -116,7 +127,7 @@ python agents/run.py
 *   *"What is the risk profile of Tesla?"*
 *   *"Compare HDFC Bank and ICICI Bank"*
 *   *"Get me the latest news for Apple"*
-*   *"Predict the price of Bitcoin"*
+*   *"Predict the price of SBI"*
 
 ### Running the Backend API
 Start the FastAPI server for the REST API:
@@ -132,14 +143,14 @@ fin-alpha/
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
-├── .env.example
+├── .env.local
 ├── agents/
 │   ├── __init__.py
-│   ├── agent.py
-│   ├── config.py
-│   ├── run.py
-│   ├── state.py
-│   ├── tools.py
+│   ├── agent.py          # Main LangGraph agent
+│   ├── config.py         # Agent configuration
+│   ├── run.py            # CLI entry point
+│   ├── state.py          # Agent state definition
+│   ├── tools.py          # LangChain tools
 │   ├── clients/
 │   │   ├── __init__.py
 │   │   ├── backend_client.py
@@ -152,19 +163,17 @@ fin-alpha/
 │       ├── agent_prompts.py
 │       ├── subagent_prompts.py
 │       ├── synthesis_prompts.py
-│       └── system_prompts.py
+│       └── tools_prompts.py
 ├── backend/
 │   ├── __init__.py
-│   ├── analyze.py
-│   ├── app.py
-│   ├── config.py
-│   ├── gemini_helper.py
-│   ├── market_maker.py
-│   ├── mint.py
-│   ├── models.py
+│   ├── app.py            # FastAPI application
+│   ├── config.py         # Backend configuration
+│   ├── groq_helper.py    # Groq API helper
+│   ├── market_maker.py   # Market making models
+│   ├── mint.py           # LiveMint scraper
+│   ├── models.py         # Pydantic models
 │   ├── price_prediction.py
-│   ├── risk_analysis.py
-│   └── summarizer.py
+│   └── risk_analysis.py
 ├── static/
 │   └── favicon.svg
 ```

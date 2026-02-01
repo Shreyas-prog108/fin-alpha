@@ -25,11 +25,10 @@ import httpx
 from dotenv import load_dotenv
 
 from backend.config import (
-    GEMINI_API_KEY,
-    GEMINI_API_VERSION,
+    GROQ_API_KEY,
     ALLOWED_ORIGINS,
-    GEMINI_API_KEY,
     REQUIRE_HTTPS,
+    GROQ_API_URL,
 )
 from backend.models import (
     NewsRequest,
@@ -37,14 +36,14 @@ from backend.models import (
     PredictionRequest,
     RiskAnalysisRequest,
     MarketMakerRequest,
-    GeminiQueryRequest,
-    GeminiSearchAnalysisRequest,
     NewsAnalysisRequest,
+    GroqQueryRequest,
+    SearchAnalysisRequest,
 )
 from backend.risk_analysis import analyze_risk
 from backend.market_maker import market_maker_quote
 from backend.price_prediction import predict_price
-from backend.gemini_helper import query_gemini
+from backend.groq_helper import query_groq
 
 load_dotenv()
 
@@ -154,23 +153,23 @@ async def favicon():
 # PROTECTED ENDPOINTS (Auth required)
 # =============================
 
-@app.get("/api/gemini-models")
-async def list_gemini_models(api_key: str = Depends(verify_api_key)):
+@app.get("/api/groq-models")
+async def list_groq_models(api_key: str = Depends(verify_api_key)):
     """
-    List available Gemini models
+    List available Groq models
     Requires: Authorization: Bearer <API_KEY>
     """
-    if not GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY not configured")
+    if not GROQ_API_KEY:
+        logger.error("GROQ_API_KEY not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Service temporarily unavailable"
         )
     
     try:
-        url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models"
+        url = "https://api.groq.com/openai/v1/models"
         headers = {
-            "Authorization": f"Bearer {GEMINI_API_KEY}",
+            "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         
@@ -178,7 +177,7 @@ async def list_gemini_models(api_key: str = Depends(verify_api_key)):
             resp = await client.get(url, headers=headers)
             
             if resp.status_code != 200:
-                logger.error(f"Gemini API error: {resp.status_code}")
+                logger.error(f"Groq API error: {resp.status_code}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Service temporarily unavailable"
@@ -187,40 +186,35 @@ async def list_gemini_models(api_key: str = Depends(verify_api_key)):
             return resp.json()
             
     except httpx.TimeoutException:
-        logger.error("Gemini API timeout")
+        logger.error("Groq API timeout")
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Service temporarily unavailable"
         )
     except Exception as e:
-        logger.exception(f"Unexpected error in list_gemini_models: {type(e).__name__}")
+        logger.exception(f"Unexpected error in list_groq_models: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
         )
 
 
-@app.post("/api/gemini-query")
-async def gemini_query_endpoint(
-    request: GeminiQueryRequest,
+@app.post("/api/groq-query")
+async def groq_query_endpoint(
+    request: GroqQueryRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Proxy a prompt to Gemini via backend helper
-    Optionally enable Google Search grounding with use_search=true
+    Proxy a prompt to Groq via backend helper
     """
     try:
-        if request.use_search:
-            from backend.gemini_helper import query_gemini_with_search
-            result = await query_gemini_with_search(request.prompt)
-            return result
-        else:
-            response_text = await query_gemini(request.prompt)
-            return {"response": response_text}
+        # Note: Search grounding is disabled for Groq
+        response_text = await query_groq(request.prompt)
+        return {"response": response_text}
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Unexpected error in gemini_query: {type(e).__name__}")
+        logger.exception(f"Unexpected error in groq_query: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
@@ -229,64 +223,39 @@ async def gemini_query_endpoint(
 
 @app.post("/api/search-analysis")
 async def search_grounded_analysis(
-    request: GeminiSearchAnalysisRequest,
+    request: SearchAnalysisRequest,
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Perform comprehensive stock analysis using Gemini with Google Search grounding.
-    This retrieves real-time news and market data via search, then provides AI analysis.
+    Perform comprehensive stock analysis using Groq.
+    (Note: Google Search grounding is NOT supported on Groq, falling back to basic analysis)
     """
     try:
-        from backend.gemini_helper import query_gemini_with_search
-        
-        logger.info(f"Search analysis requested for {request.symbol}")
-        
-        # Build comprehensive search prompt
-        prompt = f"""You are a financial analyst. Use Google Search to find the latest information and provide a comprehensive analysis.
+        # Build prompt for Groq (without search capability)
+        prompt = f"""You are a financial analyst. Analyze this stock based on your knowledge.
 
 **Stock:** {request.company_name} ({request.symbol})
 **Analysis Type:** {request.query_type}
 **Time Frame:** {request.time_frame}
 
-Please search for and analyze:
+Please provide:
+1. **Analysis**: Based on general knowledge (Note: Live search is disabled).
+2. **Investment Recommendation**: BUY / HOLD / SELL
+3. **Key Factors**
 
-1. **Latest News** (last 7 days):
-   - Search for recent news about {request.company_name}
-   - Include any earnings reports, management changes, or major announcements
-   
-2. **Stock Price & Performance**:
-   - Current stock price and recent price movement
-   - Compare with sector performance
-   
-3. **Market Sentiment**:
-   - Analyst ratings and price targets
-   - Social media and investor sentiment
-   
-4. **Key Events & Catalysts**:
-   - Upcoming earnings dates
-   - Any regulatory or legal developments
-   - Product launches or business developments
+Format your response with clear sections."""
 
-5. **Investment Recommendation**:
-   Based on your search findings, provide:
-   - BUY / HOLD / SELL recommendation
-   - Key reasons for your recommendation
-   - Risk factors to consider
-   - Price target (if available from analyst consensus)
-
-Format your response with clear sections and bullet points. Include specific dates and numbers where available. Cite your sources."""
-
-        # Query Gemini with search grounding
-        result = await query_gemini_with_search(prompt)
+        # Query Groq
+        response_text = await query_groq(prompt)
         
         return {
             "symbol": request.symbol,
             "company_name": request.company_name,
             "query_type": request.query_type,
             "time_frame": request.time_frame,
-            "analysis": result.get("response", ""),
-            "sources": result.get("sources", []),
-            "search_used": result.get("search_used", False)
+            "analysis": response_text,
+            "sources": [],
+            "search_used": False
         }
         
     except HTTPException:
@@ -305,8 +274,7 @@ async def analyze_news(
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Analyze combined news from NewsAPI and LiveMint using Gemini
-    Returns sentiment analysis and investment insights
+    Analyze combined news from NewsAPI and LiveMint using Groq
     """
     try:
         logger.info(f"News analysis requested for {request.symbol}")
@@ -344,7 +312,7 @@ async def analyze_news(
                 "articles_analyzed": 0
             }
         
-        # Build prompt for Gemini
+        # Build prompt
         articles_text = "\n".join([
             f"- [{a['source']}] {a['title']}: {a['summary'][:200]}... (Sentiment: {a['sentiment']})"
             for a in all_articles
@@ -361,10 +329,10 @@ async def analyze_news(
 News Articles:
 {articles_text}
 
-Provide a concise analysis (max 300 words) that would help an investor make informed decisions."""
+Provide a concise analysis (max 300 words)."""
         
-        # Get Gemini analysis
-        analysis = await query_gemini(prompt)
+        # Get Groq analysis
+        analysis = await query_groq(prompt)
         
         # Calculate aggregate sentiment
         sentiments = [a["sentiment"] for a in all_articles]

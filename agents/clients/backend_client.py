@@ -253,7 +253,7 @@ class BackendClient:
     
     async def analyze_chart(self, symbol: str, data: List[Dict]) -> Dict:
         """
-        Analyze stock chart data using Gemini AI
+        Analyze stock chart data using Groq AI
         
         Args:
             symbol: Stock ticker symbol
@@ -289,7 +289,7 @@ class BackendClient:
     
     async def summarize_news(self, articles: List[str]) -> Dict:
         """
-        Summarize news articles using Gemini AI
+        Summarize news articles using Groq AI
         
         Args:
             articles: List of news article texts
@@ -327,7 +327,7 @@ class BackendClient:
         mint_articles: List[Dict]
     ) -> Dict:
         """
-        Analyze combined news from NewsAPI and LiveMint using Gemini AI
+        Analyze combined news from NewsAPI and LiveMint using Groq AI
         
         Args:
             symbol: Stock ticker symbol
@@ -366,28 +366,28 @@ class BackendClient:
         except httpx.HTTPError as e:
             raise Exception(f"News analysis API error: {str(e)}")
 
-    async def query_gemini(self, prompt: str, use_search: bool = False) -> Dict:
+    async def query_groq(self, prompt: str, use_search: bool = False) -> Dict:
         """
-        Query Gemini via backend helper
+        Query Groq via backend helper
         
         Args:
             prompt: Prompt string
-            use_search: Enable Google Search grounding
+            use_search: (Ignored for Groq)
         
         Returns:
-            Dictionary with response text (and sources if search enabled)
+            Dictionary with response text
         """
         try:
             payload = {"prompt": prompt, "use_search": use_search}
             response = await self.client.post(
-                f"{self.base_url}/api/gemini-query",
+                f"{self.base_url}/api/groq-query",
                 json=payload,
                 headers=self._get_headers()
             )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            raise Exception(f"Gemini query API error: {str(e)}")
+            raise Exception(f"Groq query API error: {str(e)}")
 
     async def search_analysis(
         self,
@@ -397,8 +397,8 @@ class BackendClient:
         time_frame: str = "3mo"
     ) -> Dict:
         """
-        Perform stock analysis using Gemini with Google Search grounding.
-        Retrieves real-time news and market data via search.
+        Perform stock analysis using Groq.
+        (Note: Google Search grounding is NOT supported on Groq)
         
         Args:
             symbol: Stock ticker symbol

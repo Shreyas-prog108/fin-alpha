@@ -21,7 +21,7 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "compare_stocks": "Compare multiple stocks side-by-side. Use for: stock comparison, relative analysis.",
     "calculate_portfolio_metrics": "Calculate portfolio volatility, return, Sharpe ratio. Use for: portfolio analysis.",
     "analyze_combined_news": "Analyze news from NewsAPI + LiveMint with AI. Use for: comprehensive news analysis.",
-    "search_grounded_analysis": "🔥 PREFERRED: Get comprehensive analysis using Gemini + Google Search. Real-time news, prices, sentiment. Use for: investment decisions, news, recommendations.",
+    "search_grounded_analysis": "Get comprehensive analysis using Groq. Real-time analysis and recommendations.",
     "quick_search_query": "Quick real-time search for any market query. Use for: general questions, quick lookups.",
 }
 

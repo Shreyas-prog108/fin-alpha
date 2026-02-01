@@ -19,20 +19,21 @@ yahoo = get_yahoo_client()
 #TOOL-1:STOCK-PRICE
 @tool
 def get_stock_price(symbol:str)->str:
-    """Get current stock price and stock info using Yahoo Finance"""
+    """Get current stock price using TradingView (fallback to Yahoo)"""
     try:
-        result = yahoo.get_current_price(symbol)
+        # Try TradingView first (more reliable for NSE/BSE)
+        print(f"[TOOLS] Fetching price for {symbol} from TradingView...")
+        result = tradingview.get_current_price(symbol)
         return json.dumps(result, indent=2)
     except Exception as e:
-        # Fallback to TradingView if Yahoo fails
-        print(f"[TOOLS] Yahoo failed: {str(e)[:50]}... Falling back to TradingView")
+        # Fallback to Yahoo
+        print(f"[TOOLS] TradingView failed: {str(e)[:100]}... Fallback to Yahoo")
         try:
-            result = tradingview.get_current_price(symbol)
-            print(f"[TOOLS] TradingView fallback success: {result.get('current_price')}")
+            result = yahoo.get_current_price(symbol)
             return json.dumps(result, indent=2)
-        except Exception as tv_error:
+        except Exception as yahoo_error:
             return json.dumps({
-                "error": f"Yahoo failed: {str(e)}. TradingView fallback failed: {str(tv_error)}"
+                "error": f"TradingView failed: {str(e)}. Yahoo failed: {str(yahoo_error)}"
             })
 
 #TOOL-2:STOCK-INFO
@@ -359,12 +360,11 @@ async def search_grounded_analysis(
     time_frame: str = "3mo"
 ) -> str:
     """
-    Get comprehensive stock analysis using Gemini with Google Search grounding.
-    This tool uses real-time web search to fetch the latest news, price data,
-    market sentiment, and provides AI-powered investment recommendations.
+    Get comprehensive stock analysis using Groq.
+    This tool provides AI-powered investment recommendations.
     
     Args:
-        symbol: Stock ticker (e.g., 'RELIANCE.NS', 'AAPL')
+        symbol: Stock ticker (e.g., 'RELIANCE.NSE', 'AAPL')
         company_name: Company name (e.g., 'Reliance Industries', 'Apple Inc')
         query_type: Type of analysis - 'analysis', 'news', 'sentiment', 'recommendation'
         time_frame: Time frame for analysis - '1wk', '1mo', '3mo', '6mo', '1y'
@@ -373,7 +373,7 @@ async def search_grounded_analysis(
         Comprehensive analysis with real-time data, sources, and recommendations.
     """
     try:
-        print(f"[SEARCH ANALYSIS] Querying Gemini with Google Search for {symbol} ({company_name})")
+        print(f"[SEARCH ANALYSIS] Querying Groq for {symbol} ({company_name})")
         
         result = await backend.search_analysis(
             symbol=symbol,
@@ -391,7 +391,7 @@ async def search_grounded_analysis(
             "analysis": result.get("analysis", "No analysis available"),
             "sources": result.get("sources", []),
             "grounding_used": result.get("grounding_used", False),
-            "model": result.get("model", "gemini-3-flash-preview")
+            "model": result.get("model", "openai/gpt-oss-120b")
         }
         
         return json.dumps(response, indent=2)
@@ -410,7 +410,7 @@ async def search_grounded_analysis(
 @tool
 async def quick_search_query(query: str) -> str:
     """
-    Quick search using Gemini with Google Search grounding.
+    Quick search using Groq.
     Use this for general market queries, news lookups, or quick information retrieval.
     
     Args:
@@ -422,7 +422,7 @@ async def quick_search_query(query: str) -> str:
     try:
         print(f"[QUICK SEARCH] Querying: {query}")
         
-        result = await backend.query_gemini(prompt=query, use_search=True)
+        result = await backend.query_groq(prompt=query)
         
         return json.dumps({
             "query": query,

@@ -19,8 +19,6 @@ class YahooFinanceClient:
     """
     
     def __init__(self):
-        self.cache = {}
-        self.cache_ttl = 300
         self._session = self._create_session()
     
     def _create_session(self):
@@ -45,17 +43,7 @@ class YahooFinanceClient:
         """Get yfinance Ticker with custom session"""
         return yf.Ticker(symbol, session=self._session)
     
-    def _get_cached(self, key: str) -> Optional[Dict]:
-        """Get cached data if not expired"""
-        if key in self.cache:
-            data, timestamp = self.cache[key]
-            if (datetime.now().timestamp() - timestamp) < self.cache_ttl:
-                return data
-        return None
-    
-    def _set_cache(self, key: str, data: Dict):
-        """Set cache with current timestamp"""
-        self.cache[key] = (data, datetime.now().timestamp())
+
     
     def get_current_price(self, symbol: str) -> Dict:
         """
@@ -72,10 +60,7 @@ class YahooFinanceClient:
             Exception: If data fetch fails
         """
         
-        cache_key = f"price_{symbol}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
+
         
         # Retry with backoff
         max_retries = 3
@@ -118,7 +103,6 @@ class YahooFinanceClient:
                     "exchange": "NSE" if '.NSE' in symbol else ("BSE" if '.BO' in symbol else "Unknown")
                 }
                 
-                self._set_cache(cache_key, result)
                 print(f"[YAHOO] Got price for {symbol}: {current_price}")
                 return result
                 
@@ -144,11 +128,6 @@ class YahooFinanceClient:
         Returns:
             Dictionary with detailed company information and financial metrics
         """
-        cache_key = f"info_{symbol}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
-        
         try:
             ticker = self._get_ticker(symbol)
             info = ticker.info
@@ -185,7 +164,6 @@ class YahooFinanceClient:
                 "avg_volume": info.get("averageVolume", 0)
             }
             
-            self._set_cache(cache_key, result)
             return result
             
         except Exception as e:
@@ -239,11 +217,6 @@ class YahooFinanceClient:
         Returns:
             Dictionary with financial metrics
         """
-        cache_key = f"metrics_{symbol}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
-        
         try:
             ticker = self._get_ticker(symbol)
             info = ticker.info
@@ -277,7 +250,6 @@ class YahooFinanceClient:
                 "free_cash_flow": info.get("freeCashflow", 0),
             }
             
-            self._set_cache(cache_key, result)
             return result
             
         except Exception as e:
@@ -329,9 +301,7 @@ class YahooFinanceClient:
         
         return results
     
-    def clear_cache(self):
-        """Clear all cached data"""
-        self.cache.clear()
+
 
 _yahoo_client = None
 
