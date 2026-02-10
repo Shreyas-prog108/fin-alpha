@@ -4,6 +4,7 @@ Fetches news articles and performs sentiment analysis
 """
 
 import os
+import re
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import requests
@@ -18,6 +19,7 @@ class NewsClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("NEWSAPI_KEY")
         self.base_url = os.getenv("NEWSAPI_URL", "https://newsapi.org/v2")
+        self.max_lookback_days = int(os.getenv("NEWSAPI_MAX_DAYS", "30"))
         self.positive_words = {
             'surge', 'soar', 'jump', 'rally', 'gain', 'rise', 'climb', 'advance',
             'strong', 'positive', 'bullish', 'optimistic', 'growth', 'profit',
@@ -55,7 +57,8 @@ class NewsClient:
             return self._get_fallback_news(symbol, company_name, category=category)
         
         try:
-            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            effective_days = max(1, min(int(days), self.max_lookback_days))
+            from_date = (datetime.now() - timedelta(days=effective_days)).strftime("%Y-%m-%d")
             base_query = f'"{company_name}" OR "{symbol}" OR "{symbol} stock" OR "{symbol} share"'
             if category and category.lower() not in ["general", "all", "any"]:
                 query = f'({base_query}) AND "{category}"'
@@ -86,7 +89,7 @@ class NewsClient:
                 description = article.get("description", "")
                 content = article.get("content", "")
                 full_text = f"{title} {description} {content}".lower()
-                symbol_base = symbol.replace('.NS', '').replace('.BO', '').lower()
+                symbol_base = symbol.split(".", 1)[0].lower()
                 
                 if (company_name.lower() not in full_text and 
                     symbol.lower() not in full_text and
@@ -110,7 +113,58 @@ class NewsClient:
         except requests.exceptions.RequestException as e:
             print(f"[NEWS API ERROR] {str(e)}")
             if hasattr(e, 'response') and e.response is not None:
-                print(f"[NEWS API ERROR] Response: {e.response.text[:200]}")
+                body_preview = e.response.text[:200]
+                print(f"[NEWS API ERROR] Response: {body_preview}")
+                # Retry once with provider-advertised earliest allowed date.
+                if e.response.status_code == 426:
+                    try:
+                        payload = e.response.json()
+                        message = str(payload.get("message", ""))
+                        match = re.search(r"as far back as (\d{4}-\d{2}-\d{2})", message)
+                        if match:
+                            retry_from_date = match.group(1)
+                            print(f"[NEWS API] Retrying with supported from-date: {retry_from_date}")
+                            params = {
+                                "q": query,
+                                "from": retry_from_date,
+                                "sortBy": "relevancy",
+                                "language": "en",
+                                "pageSize": 50,
+                                "apiKey": self.api_key,
+                            }
+                            retry_resp = requests.get(url, params=params, timeout=10)
+                            print(f"[NEWS API] Retry status: {retry_resp.status_code}")
+                            retry_resp.raise_for_status()
+                            retry_data = retry_resp.json()
+                            retry_articles = retry_data.get("articles", [])
+                            results = []
+                            symbol_base = symbol.split(".", 1)[0].lower()
+                            for article in retry_articles:
+                                title = article.get("title", "")
+                                description = article.get("description", "")
+                                content = article.get("content", "")
+                                full_text = f"{title} {description} {content}".lower()
+                                if (
+                                    company_name.lower() not in full_text
+                                    and symbol.lower() not in full_text
+                                    and symbol_base not in full_text
+                                ):
+                                    continue
+                                sentiment_data = self.analyze_sentiment_simple(f"{title} {description}")
+                                results.append({
+                                    "title": title,
+                                    "description": description,
+                                    "url": article.get("url", ""),
+                                    "published_at": article.get("publishedAt", ""),
+                                    "source": article.get("source", {}).get("name", "Unknown"),
+                                    "sentiment": sentiment_data["sentiment"],
+                                    "sentiment_score": sentiment_data["score"]
+                                })
+                            if results:
+                                print(f"[NEWS API] Retry filtered to {len(results)} relevant articles")
+                                return results
+                    except Exception as retry_error:
+                        print(f"[NEWS API] Retry failed: {retry_error}")
             print("[NEWS API] Falling back to alternative news source")
             return self._get_fallback_news(symbol, company_name, category=category)
         except Exception as e:
@@ -123,33 +177,30 @@ class NewsClient:
         category: Optional[str] = None
     ) -> List[Dict]:
         """
-        Fallback news source (Yahoo Finance RSS or web scraping)
+        Fallback news source via LiveMint RSS
         Used when NewsAPI is unavailable
         """
         try:
-            import yfinance as yf
-            ticker = yf.Ticker(symbol)
-            news = ticker.news
-            
+            from .mint_client import get_mint_client
+            mint_client = get_mint_client()
+            mint_news = mint_client.get_stock_news(
+                symbol=symbol,
+                company_name=company_name,
+                limit=10,
+            )
             results = []
-            category_filter = (category or "").strip().lower()
-            for article in news[:10]:
+            for article in mint_news:
                 title = article.get("title", "")
-                summary = article.get("summary", "")[:200]
-                if category_filter and category_filter not in ["general", "all", "any"]:
-                    text_blob = f"{title} {summary}".lower()
-                    if category_filter not in text_blob:
-                        continue
-                sentiment_data = self.analyze_sentiment_simple(title)
+                summary = article.get("summary", "")[:500]
+                text_blob = f"{title} {summary}".strip()
+                sentiment_data = self.analyze_sentiment_simple(text_blob)
 
                 results.append({
                     "title": title,
                     "description": summary,
-                    "url": article.get("link", ""),
-                    "published_at": datetime.fromtimestamp(
-                        article.get("providerPublishTime", 0)
-                    ).isoformat() if article.get("providerPublishTime") else "",
-                    "source": article.get("publisher", "Yahoo Finance"),
+                    "url": article.get("link", article.get("url", "")),
+                    "published_at": article.get("published", article.get("published_at", "")),
+                    "source": article.get("source", "LiveMint"),
                     "sentiment": sentiment_data["sentiment"],
                     "sentiment_score": sentiment_data["score"]
                 })

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import re
 from pathlib import Path
@@ -66,7 +67,23 @@ async def main():
         try:
             result = await agent.run(query)
             response = result["messages"][-1]["content"]
-            print(f"Agent: {response}\n")
+            pdf_success = re.search(r"PDF Export:\s*`([^`]+)`", response)
+            pdf_failed = re.search(r"PDF Export:\s*failed\s*\((.+)\)", response)
+            analysis_text = re.sub(r"\n{0,2}PDF Export:.*$", "", response, flags=re.S).strip()
+            show_terminal_analysis = os.getenv("FIN_ALPHA_SHOW_TERMINAL_ANALYSIS", "0") == "1"
+
+            if pdf_success:
+                pdf_path = pdf_success.group(1)
+                print(f"Agent: PDF report generated at: {pdf_path}")
+                if show_terminal_analysis:
+                    print(f"\n{analysis_text}\n")
+                else:
+                    print("Set FIN_ALPHA_SHOW_TERMINAL_ANALYSIS=1 to also print analysis in terminal.\n")
+            elif pdf_failed:
+                print(f"Agent: PDF export failed: {pdf_failed.group(1)}\n")
+                print(f"{analysis_text}\n")
+            else:
+                print(f"Agent: {response}\n")
         except Exception as e:
             print(f"❌ Error: {e}\n")
 if __name__ == "__main__":

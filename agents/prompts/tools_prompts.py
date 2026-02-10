@@ -20,9 +20,9 @@ TOOL_DESCRIPTIONS: Dict[str, str] = {
     "get_market_news": "Get general market news. Use for: market conditions, macro trends.",
     "compare_stocks": "Compare multiple stocks side-by-side. Use for: stock comparison, relative analysis.",
     "calculate_portfolio_metrics": "Calculate portfolio volatility, return, Sharpe ratio. Use for: portfolio analysis.",
-    "analyze_combined_news": "Analyze news from NewsAPI + LiveMint with AI. Use for: comprehensive news analysis.",
-    "search_grounded_analysis": "Get comprehensive analysis using Groq. Real-time analysis and recommendations.",
-    "quick_search_query": "Quick real-time search for any market query. Use for: general questions, quick lookups.",
+    "analyze_combined_news": "Analyze news from Perplexity + NewsAPI + LiveMint with AI. Use for: comprehensive news analysis.",
+    "search_grounded_analysis": "Get comprehensive grounded analysis using Perplexity. Real-time analysis and recommendations.",
+    "quick_search_query": "Quick real-time search using Perplexity for market queries and lookups.",
 }
 
 # ========== TOOL SELECTION GUIDE ==========
@@ -36,7 +36,7 @@ Query Type → Tools:
 2. Risk Check: get_analyze_risk + get_stock_info
 3. Price Prediction: predict_price + get_hist_data
 4. Investment Decision (comprehensive):
-   - search_grounded_analysis (BEST - gets everything via Google Search)
+   - search_grounded_analysis (BEST - grounded web results via Perplexity)
    - OR fallback to: get_stock_price + get_analyze_risk + analyze_news_sentiment + predict_price
 5. News & Sentiment: search_grounded_analysis OR analyze_combined_news
 6. Comparison: compare_stocks
@@ -85,7 +85,7 @@ DECISION_TREE = """
    - General → quick_search_query
 3. Synthesize & respond
 
-⚡ DEFAULT TO search_grounded_analysis - it has real-time Google Search!
+⚡ DEFAULT TO search_grounded_analysis - it has real-time grounded search.
 """
 
 __all__ = ['TOOL_DESCRIPTIONS', 'TOOL_SELECTION_GUIDE', 'USAGE_EXAMPLES', 'TOOL_CATEGORIES', 'DECISION_TREE']

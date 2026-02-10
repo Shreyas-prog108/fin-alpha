@@ -2,11 +2,13 @@ from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from typing import Dict, List, Tuple, Optional
 import json
+import re
 
 from .state import AgentState
 from .config import config
 from .tools import ALL_TOOLS
-from .clients import get_tradingview_client, get_backend_client
+from .clients import get_alphavantage_client, get_backend_client
+from .pdf_exporter import export_analysis_to_pdf
 from .prompts import (
     MAIN_AGENT_SYSTEM_PROMPT,
     TOOL_SELECTION_GUIDE,
@@ -29,10 +31,9 @@ class FinAgent:
             temperature=config.LLM_TEMPERATURE,
             max_tokens=config.MAX_TOKENS,
             api_key=config.GROQ_API_KEY,
-            model_kwargs={"reasoning_effort": "medium"}
         )
         self.graph=self._build_graph()
-        self.tradingview = get_tradingview_client()
+        self.alphavantage = get_alphavantage_client()
         self.backend = get_backend_client()
 
     async def _safe_generate(self, prompt: str, state: AgentState) -> str:
@@ -169,7 +170,7 @@ Guidance:
             name = symbol_metadata[symbol].get("name")
             if name:
                 return name
-        return symbol.replace(".NSE", "").replace(".BO", "")
+        return symbol.split(".", 1)[0]
 
     def _apply_exchange_suffix(self, ticker: str, exchange: str) -> str:
         if not ticker:
@@ -181,13 +182,95 @@ Guidance:
             return f"{ticker.upper()}.NSE"
         if exchange_upper in ["BSE", "BOM"]:
             return f"{ticker.upper()}.BO"
+        if exchange_upper in ["LSE", "LON", "XLON"]:
+            return f"{ticker.upper()}.L"
+        if exchange_upper in ["TYO", "JPX", "XTKS", "TSE"]:
+            return f"{ticker.upper()}.T"
+        if exchange_upper in ["HKG", "HKEX", "XHKG"]:
+            return f"{ticker.upper()}.HK"
+        if exchange_upper in ["SGX", "SES", "XSES"]:
+            return f"{ticker.upper()}.SI"
+        if exchange_upper in ["XETRA", "FRA", "XETR"]:
+            return f"{ticker.upper()}.DE"
+        if exchange_upper in ["EPA", "PAR", "XPAR"]:
+            return f"{ticker.upper()}.PA"
+        if exchange_upper in ["BME", "XMAD", "MAD"]:
+            return f"{ticker.upper()}.MC"
+        if exchange_upper in ["MIL", "XMIL"]:
+            return f"{ticker.upper()}.MI"
+        if exchange_upper in ["AMS", "XAMS"]:
+            return f"{ticker.upper()}.AS"
         return ticker.upper()
 
     def _looks_like_ticker(self, value: str) -> bool:
         import re
         if not value:
             return False
-        return bool(re.match(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$", value.upper()))
+        return bool(re.match(r"^[A-Z0-9&-]{1,15}(\.[A-Z]{1,4})?$", value.upper()))
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        if not symbol:
+            return ""
+        try:
+            return self.alphavantage.normalize_symbol(symbol.upper().strip())
+        except Exception:
+            return symbol.upper().strip()
+
+    def _symbols_equivalent(self, left: str, right: str) -> bool:
+        left_norm = self._normalize_symbol(left)
+        right_norm = self._normalize_symbol(right)
+        if not left_norm or not right_norm:
+            return False
+        if left_norm == right_norm:
+            return True
+        left_base, _, left_suffix = left_norm.partition(".")
+        right_base, _, right_suffix = right_norm.partition(".")
+        if left_base != right_base:
+            return False
+        if not left_suffix or not right_suffix:
+            return True
+        return left_suffix == right_suffix
+
+    def _reconcile_symbol_with_company(
+        self, symbol: str, company_name: str
+    ) -> Tuple[str, Dict]:
+        """Use Alpha Vantage search to verify/canonicalize LLM symbols."""
+        normalized_input = self._normalize_symbol(symbol)
+        fallback_meta = {
+            "name": company_name or normalized_input,
+            "source": "groq",
+        }
+        if not company_name:
+            return normalized_input, fallback_meta
+
+        try:
+            av_match = self.alphavantage.search_symbol(company_name)
+            match_score = float(av_match.get("match_score", 0) or 0) if av_match else 0.0
+            if av_match and match_score >= 0.35:
+                raw_symbol = (av_match.get("symbol") or av_match.get("ticker") or "").upper()
+                exchange = av_match.get("exchange", "")
+                candidate = (
+                    raw_symbol
+                    if "." in raw_symbol
+                    else self._apply_exchange_suffix(av_match.get("ticker", ""), exchange)
+                )
+                candidate = self._normalize_symbol(candidate)
+                if candidate and self._looks_like_ticker(candidate):
+                    if normalized_input and not self._symbols_equivalent(normalized_input, candidate):
+                        print(
+                            f"[SYMBOL CORRECTED] {company_name}: "
+                            f"{normalized_input} -> {candidate}"
+                        )
+                    return candidate, {
+                        "name": av_match.get("name", company_name) or company_name,
+                        "exchange": exchange,
+                        "source": "alphavantage_verify",
+                        "match_score": match_score,
+                    }
+        except Exception as e:
+            print(f"[SYMBOL VERIFY ERROR] {str(e)}")
+
+        return normalized_input, fallback_meta
 
     def _parse_tool_result(self, result: object) -> Dict:
         if isinstance(result, str):
@@ -199,30 +282,31 @@ Guidance:
             return result
         return {"raw": result}
 
-    def _resolve_symbol_from_tradingview(self, query: str) -> Tuple[Optional[str], Dict]:
-        """TradingView symbol resolution (often blocked by rate limits)"""
+    def _resolve_symbol_from_alphavantage(self, query: str) -> Tuple[Optional[str], Dict]:
+        """Alpha Vantage symbol resolution."""
         try:
-            result = self.tradingview.search_symbol(query)
+            result = self.alphavantage.search_symbol(query)
             if not result:
                 return None, {}
+            full_symbol = result.get("symbol", "")
             ticker = result.get("ticker", "")
             exchange = result.get("exchange", "")
-            description = result.get("description", "") or query
-            symbol = self._apply_exchange_suffix(ticker, exchange)
+            description = result.get("name", "") or query
+            symbol = full_symbol.upper() if full_symbol and "." in full_symbol else self._apply_exchange_suffix(ticker, exchange)
             metadata = {
                 "name": description,
                 "exchange": exchange,
-                "source": "tradingview"
+                "source": "alphavantage"
             }
             return symbol, metadata
         except Exception as e:
-            print(f"[TRADINGVIEW ERROR] {str(e)}")
+            print(f"[ALPHAVANTAGE ERROR] {str(e)}")
             return None, {}
 
     def _resolve_symbol_fallback(self, query: str) -> Tuple[Optional[str], Dict]:
         """
         Minimal fallback for symbol resolution.
-        Only used when LLM doesn't provide yahoo_symbols.
+        Only used when LLM doesn't provide symbols.
         Just formats the input - no hardcoded stock lists.
         """
         query_clean = query.strip()
@@ -230,11 +314,9 @@ Guidance:
             return None, {}
         
         query_upper = query_clean.upper()
-        
-
-        if any(suffix in query_upper for suffix in ['.NSE','.BSE', '.BO', '.L', '.HK', '.T', '.AX', '.TO']):
-            exchange = "NSE" if ".NSE" in query_upper else "Other"
-            return query_upper, {"name": query_clean, "exchange": exchange, "source": "direct"}
+        if re.match(r"^[A-Z0-9&-]{1,15}\.[A-Z]{1,4}$", query_upper):
+            suffix = query_upper.split(".")[-1]
+            return query_upper, {"name": query_clean, "exchange": suffix, "source": "direct"}
         
 
         if len(query_upper) <= 15 and query_upper.replace("&", "").replace("-", "").replace(".", "").isalnum():
@@ -288,7 +370,7 @@ Guidance:
     async def parse_query_node(self,state:AgentState)->AgentState:
         """
         Node 1: Parse user query
-        Use Groq to extract stock symbols directly in Yahoo Finance format
+        Use Groq to extract stock symbols in exchange-qualified format.
         """   
         query=state["user_query"]
         prompt=f"""You are a financial assistant expert in stock markets. Analyze this query and extract information.
@@ -297,12 +379,10 @@ USER QUERY: "{query}"
 
 Extract the following and return ONLY a valid JSON object:
 
-1. **yahoo_symbols**: The EXACT Yahoo Finance ticker symbols for the stocks mentioned.
-   - For Indian stocks on NSE: Add ".NSE" suffix (e.g., "SBIN.NSE" for SBI, "RELIANCE.NSE" for Reliance, "TCS.NSE" for TCS)
-   - For Indian stocks on BSE: Add ".BO" suffix (e.g., "SBIN.BO")
-   - For US stocks: No suffix needed (e.g., "AAPL", "GOOGL", "TSLA")
-   - Common Indian bank tickers: SBI/State Bank = "SBIN.NSE", HDFC Bank = "HDFCBANK.NSE", ICICI = "ICICIBANK.NSE"
-   - For other markets: Use appropriate suffix (.L for London, .HK for Hong Kong)
+1. **symbols**: Exact ticker symbols for the stocks mentioned.
+   - Use exchange-qualified format where needed (e.g., SAP.DE, AIR.PA, 7203.T, D05.SI, RELIANCE.NSE).
+   - For US symbols, no suffix needed when standard (e.g., AAPL, MSFT).
+   - If unsure, provide the best likely tradable ticker.
 
 2. **company_names**: Full company names corresponding to each symbol
 
@@ -310,14 +390,14 @@ Extract the following and return ONLY a valid JSON object:
 
 4. **intent**: What the user wants to know
 
-5. **time_frame**: Yahoo Finance period string: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
+5. **time_frame**: One of: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max
 
 6. **sentiment_focus**: positive, negative, neutral, mixed, or unknown
 
 7. **news_category**: earnings, product, regulatory, merger, guidance, dividend, macro, analyst_ratings, legal, sector, general
 
 Return ONLY this JSON format (no other text):
-{{"yahoo_symbols": ["SBIN.NSE"], "company_names": ["State Bank of India"], "query_type": "investment_decision", "intent": "analyze SBI stock", "time_frame": "3mo", "sentiment_focus": "unknown", "news_category": "general"}}
+{{"symbols": ["SAP.DE"], "company_names": ["SAP SE"], "query_type": "investment_decision", "intent": "analyze SAP stock", "time_frame": "3mo", "sentiment_focus": "unknown", "news_category": "general"}}
 """
         try:
             response_payload = await self.backend.query_groq(prompt)
@@ -339,14 +419,14 @@ Return ONLY this JSON format (no other text):
                 content = ' '.join(text_parts)
             
 
-            json_match = re.search(r'\{[^\{\}]*"(?:yahoo_symbols|company_names)"[^\{\}]*\}', content, re.DOTALL)
+            json_match = re.search(r'\{[^\{\}]*"(?:symbols|yahoo_symbols|company_names)"[^\{\}]*\}', content, re.DOTALL)
             
             if json_match:
                 json_str = json_match.group()
                 parsed = json.loads(json_str)
                 
 
-                yahoo_symbols = parsed.get("yahoo_symbols", [])
+                symbols = parsed.get("symbols", []) or parsed.get("yahoo_symbols", [])
                 company_names = parsed.get("company_names", [])
                 
                 state["query_type"] = parsed.get("query_type", "investment_decision")
@@ -366,18 +446,18 @@ Return ONLY this JSON format (no other text):
                     )
                 
 
-                if yahoo_symbols:
+                if symbols:
                     resolved_symbols = []
                     symbol_metadata = {}
-                    for i, symbol in enumerate(yahoo_symbols):
-                        symbol = symbol.upper().strip()
-                        if not any(suffix in symbol for suffix in ['.NSE','.BSE', '.BO', '.L', '.HK']) and len(symbol) <= 10:
-
-                            pass 
+                    for i, symbol in enumerate(symbols):
+                        symbol = self._normalize_symbol(symbol)
                         name = company_names[i] if i < len(company_names) else symbol
-                        resolved_symbols.append(symbol)
-                        symbol_metadata[symbol] = {"name": name, "source": "groq"}
-                        print(f"[GROQ] Resolved: {name} -> {symbol}")
+                        reconciled_symbol, meta = self._reconcile_symbol_with_company(symbol, name)
+                        if not reconciled_symbol:
+                            continue
+                        resolved_symbols.append(reconciled_symbol)
+                        symbol_metadata[reconciled_symbol] = meta
+                        print(f"[GROQ] Resolved: {name} -> {reconciled_symbol}")
                     
                     state["symbols"] = resolved_symbols
                     state["symbol_metadata"] = symbol_metadata
@@ -425,7 +505,7 @@ Return ONLY this JSON format (no other text):
                     if metadata:
                         state["symbol_metadata"] = {symbol: metadata}
                 else:
-                    potential_tickers = re.findall(r'\b([A-Z]{2,10}(?:\.[A-Z]{1,2})?)\b', query.upper())
+                    potential_tickers = re.findall(r'\b([A-Z0-9]{1,10}(?:\.[A-Z]{1,4})?)\b', query.upper())
                     
                     # Filter out common English words
                     common_words = {
@@ -452,7 +532,7 @@ Return ONLY this JSON format (no other text):
                 state["intent"] = query
                 state["sentiment_focus"] = self._normalize_sentiment_focus(None)
                 state["news_category"] = self._normalize_news_category(None)
-                state["time_frame"] = self._infer_timeframe_from_query(
+                state["time_frame"] = await self._infer_timeframe_from_query(
                     query, state["intent"], state["sentiment_focus"]
                 )
                 
@@ -478,7 +558,7 @@ Return ONLY this JSON format (no other text):
 
     def prefetch_context_node(self, state: AgentState) -> AgentState:
         """
-        Node 2: Prefetch core market data and news (TradingView + News)
+        Node 2: Prefetch core market data and news (Alpha Vantage + News)
         """
         symbols = state.get("symbols", [])
         if not symbols:
@@ -490,9 +570,9 @@ Return ONLY this JSON format (no other text):
 
         prefetch_results = {}
         try:
-            prefetch_results["tradingview"] = self.tradingview.get_current_price(symbol)
+            prefetch_results["alphavantage"] = self.alphavantage.get_current_price(symbol)
         except Exception as e:
-            prefetch_results["tradingview_error"] = str(e)
+            prefetch_results["alphavantage_error"] = str(e)
 
         state["prefetch_results"] = prefetch_results
         state["step_count"] += 1
@@ -509,17 +589,33 @@ Return ONLY this JSON format (no other text):
         if len(symbols) > 1:
             state["tools_to_use"] = ["compare_stocks"]
         else:
-
+            # Core stack: quote/info + backend quantitative endpoints.
             tools = [
                 "get_stock_price",
-                "get_stock_info"
+                "get_stock_info",
+                "get_hist_data",
+                "get_analyze_risk",
+                "predict_price",
+                "analyze_chart",
             ]
-            
 
+            # Always include base sentiment/news context.
+            tools.extend([
+                "get_stock_news",
+                "analyze_news_sentiment",
+                "analyze_combined_news",
+            ])
+
+            # For news-heavy queries, add backend news synthesis endpoints.
             if query_type in ["sentiment", "news_summary"] or \
                any(word in intent for word in ["news", "sentiment", "headline", "article"]):
-                tools.append("analyze_combined_news")
-            
+                tools.extend([
+                    "summarize_news_articles",
+                ])
+
+            if query_type == "risk" or any(word in intent for word in ["risk", "volatility", "spread"]):
+                tools.append("get_market_maker_quote")
+
             state["tools_to_use"] = tools
 
         state["step_count"] += 1
@@ -593,8 +689,8 @@ Return ONLY this JSON format (no other text):
 
                     results[tool_name] = result
                 except Exception as e:
-                    if tool_name == "get_stock_price" and prefetch.get("tradingview"):
-                        results[tool_name] = json.dumps(prefetch["tradingview"], indent=2)
+                    if tool_name == "get_stock_price" and prefetch.get("alphavantage"):
+                        results[tool_name] = json.dumps(prefetch["alphavantage"], indent=2)
                     elif tool_name == "get_stock_news" and prefetch.get("news"):
                         results[tool_name] = json.dumps(prefetch["news"], indent=2)
                     else:
@@ -618,6 +714,12 @@ Return ONLY this JSON format (no other text):
             name: self._parse_tool_result(result)
             for name, result in tool_results.items()
         }
+        stock_news_payload = parsed_results.get("get_stock_news", {})
+        stock_news_articles = []
+        if isinstance(stock_news_payload, dict):
+            stock_news_articles = stock_news_payload.get("articles", [])
+        elif isinstance(stock_news_payload, list):
+            stock_news_articles = stock_news_payload
 
         hist_data = parsed_results.get("get_hist_data", [])
         if isinstance(hist_data, list) and len(hist_data) > 20:
@@ -634,7 +736,7 @@ Return ONLY this JSON format (no other text):
                 "market_maker_quote": parsed_results.get("get_market_maker_quote", {})
             },
             "sentiment": {
-                "news": parsed_results.get("get_stock_news", []),
+                "news": stock_news_articles,
                 "sentiment": parsed_results.get("analyze_news_sentiment", {}),
                 "news_summary": parsed_results.get("summarize_news_articles", {}),
                 "combined_news_analysis": parsed_results.get("analyze_combined_news", {})
@@ -697,17 +799,50 @@ Return concise bullet points (3-5) with actionable insights."""
         }
         news_data = parsed_results.get("get_stock_news", {})
         sentiment_data = parsed_results.get("analyze_news_sentiment", {})
-        
+        combined_news_data = parsed_results.get("analyze_combined_news", {})
+
+        stock_news_articles = []
+        if isinstance(news_data, dict):
+            stock_news_articles = news_data.get("articles", [])
+        elif isinstance(news_data, list):
+            stock_news_articles = news_data
+
         news_articles = []
-        if isinstance(news_data, list):
-            for article in news_data[:5]:
-                if isinstance(article, dict):
-                    news_articles.append({
-                        'title': article.get('title', 'N/A'),
-                        'url': article.get('url', ''),
-                        'source': article.get('source', 'Unknown'),
-                        'sentiment': article.get('sentiment', 'neutral')
-                    })
+        for article in stock_news_articles[:5]:
+            if isinstance(article, dict):
+                news_articles.append({
+                    "title": article.get("title", "N/A"),
+                    "url": article.get("url", ""),
+                    "source": article.get("source", "Unknown"),
+                    "sentiment": article.get("sentiment", "neutral"),
+                    "published_at": article.get("published_at", article.get("publishedAt", "")),
+                })
+
+        combined_headlines = []
+        if isinstance(combined_news_data, dict):
+            raw_headlines = combined_news_data.get("top_headlines", [])
+            if isinstance(raw_headlines, list):
+                for item in raw_headlines[:5]:
+                    if isinstance(item, dict):
+                        combined_headlines.append(item)
+                    else:
+                        text = str(item)
+                        clean = text.strip().lower()
+                        if clean.startswith("[mint]"):
+                            source = "LiveMint"
+                        elif clean.startswith("[newsapi]"):
+                            source = "NewsAPI"
+                        elif clean.startswith("[perplexity]"):
+                            source = "Perplexity"
+                        else:
+                            source = "Unknown"
+                        title = text.split("]", 1)[-1].strip() if text.startswith("[") and "]" in text else text
+                        combined_headlines.append({
+                            "title": title,
+                            "source": source,
+                            "url": "",
+                            "sentiment": "neutral",
+                        })
         
         prompt = f"""You are a financial analyst. Analyze the following data for {symbol}:
 
@@ -728,13 +863,10 @@ News Articles (WITH LINKS):
 CRITICAL REQUIREMENTS:
 
 1. **Key Insights** (3-5 bullet points with specific numbers from the data)
-   - USE CORRECT CURRENCY SYMBOL based on stock exchange:
-     * .NSE or .BO (India) → ₹
-     * .L (London) → £
-     * .PA, .DE, .AS, .MI, .MC (Europe) → €
-     * .T (Tokyo) → ¥
-     * .HK (Hong Kong) → HK$
-     * No suffix or US exchanges → $
+   - USE CORRECT CURRENCY SYMBOL:
+     * First preference: infer from fetched data fields like `currency` in price/info.
+     * If currency is unavailable, use exchange suffix heuristics (e.g., .NSE/.BO → ₹, .L → £, .T → ¥, .HK → HK$, .SI → S$, .SW → CHF, many Europe exchanges → €).
+     * If still unclear, use the ISO currency code from data instead of guessing.
 
 2. **Recommendation**: BUY, HOLD, or SELL with confidence level (high/medium/low)
 
@@ -779,19 +911,21 @@ IMPORTANT:
         
         state["insights"] = insights if insights else [content[:200] + "..."]
         state["full_analysis"] = content
-        headlines = []
-        if isinstance(news_data, list):
-            headlines = news_data[:5]
+        headlines = stock_news_articles[:5] if isinstance(stock_news_articles, list) else []
         sentiment = "neutral"
         sentiment_score = 0.0
         if isinstance(sentiment_data, dict):
             sentiment = sentiment_data.get("overall_sentiment", sentiment_data.get("sentiment", "neutral"))
-            sentiment_score = sentiment_data.get("score", sentiment_data.get("sentiment_score", 0.0))
+            sentiment_score = sentiment_data.get("sentiment_score", sentiment_data.get("average_score", 0.0))
         
         state["news_references"] = {
             "headlines": headlines[:3] if isinstance(headlines, list) else [], 
             "sentiment": sentiment,
-            "sentiment_score": sentiment_score
+            "sentiment_score": sentiment_score,
+            "combined_headlines": combined_headlines[:5] if isinstance(combined_headlines, list) else [],
+            "combined_analysis": combined_news_data.get("analysis", "") if isinstance(combined_news_data, dict) else "",
+            "combined_sentiment": combined_news_data.get("sentiment_summary", "neutral") if isinstance(combined_news_data, dict) else "neutral",
+            "combined_articles_analyzed": combined_news_data.get("articles_analyzed", 0) if isinstance(combined_news_data, dict) else 0,
         }
         
         state["step_count"] += 1
@@ -918,6 +1052,21 @@ IMPORTANT:
   - Neutral: {sentiment_data.get('neutral_count', 0)}
 - **Summary:** {sentiment_data.get('summary', 'N/A')}
 """)
+        combined_news_data = tool_results.get("analyze_combined_news", {})
+        if isinstance(combined_news_data, str):
+            try:
+                combined_news_data = json.loads(combined_news_data)
+            except:
+                combined_news_data = {}
+
+        if combined_news_data and not combined_news_data.get("error"):
+            detailed_sections.append(f"""
+### 🗞️ Multi-Source News Analysis (Perplexity + NewsAPI + LiveMint)
+
+- **Combined Sentiment:** {combined_news_data.get('sentiment_summary', 'N/A').upper()}
+- **Articles Analyzed:** {combined_news_data.get('articles_analyzed', 0)}
+- **Analysis:** {combined_news_data.get('analysis', 'N/A')}
+""")
         chart_data = tool_results.get("analyze_chart", {})
         if isinstance(chart_data, str):
             try:
@@ -949,6 +1098,10 @@ IMPORTANT:
             headlines = news_refs.get("headlines", [])
             sentiment = news_refs.get("sentiment", "neutral")
             score = news_refs.get("sentiment_score", 0)
+            combined_headlines = news_refs.get("combined_headlines", [])
+            combined_sentiment = news_refs.get("combined_sentiment", "neutral")
+            combined_count = news_refs.get("combined_articles_analyzed", 0)
+            combined_analysis = news_refs.get("combined_analysis", "")
             
             if headlines and len(headlines) > 0:
                 news_section = f"\n\n### 📰 Recent News Articles\n\n"
@@ -958,7 +1111,7 @@ IMPORTANT:
                         title = headline.get('title', headline.get('headline', headline.get('description', 'N/A')))
                         source = headline.get('source', headline.get('publisher', headline.get('author', 'Unknown')))
                         url = headline.get('url', headline.get('link', '#'))
-                        published = headline.get('publishedAt', headline.get('date', ''))
+                        published = headline.get('published_at', headline.get('publishedAt', headline.get('date', '')))
                         
                         news_section += f"\n**{i}. {title}**\n"
                         news_section += f"   - Source: {source}"
@@ -967,6 +1120,24 @@ IMPORTANT:
                         news_section += "\n"
                         if url and url != '#':
                             news_section += f"   - Link: {url}\n"
+                    else:
+                        news_section += f"{i}. {headline}\n"
+            if combined_headlines:
+                news_section += "\n\n### 🗞️ Combined News (Includes LiveMint)\n\n"
+                news_section += (
+                    f"**Combined Sentiment:** {combined_sentiment.upper()} "
+                    f"(Articles: {combined_count})\n\n"
+                )
+                if combined_analysis:
+                    news_section += f"{combined_analysis}\n\n"
+                for i, headline in enumerate(combined_headlines[:5], 1):
+                    if isinstance(headline, dict):
+                        title = headline.get("title", "N/A")
+                        source = headline.get("source", "Unknown")
+                        url = headline.get("url", "")
+                        news_section += f"{i}. {title} - {source}\n"
+                        if url:
+                            news_section += f"   Link: {url}\n"
                     else:
                         news_section += f"{i}. {headline}\n"
         detailed_data = "\n".join(detailed_sections) if detailed_sections else "\n*Detailed financial data unavailable.*\n"
@@ -1014,6 +1185,12 @@ IMPORTANT:
 
 *Note: This analysis is based on current market data and news sentiment. This should not be considered financial advice. Always do your own research before investing.*
         """ 
+
+        try:
+            pdf_path = export_analysis_to_pdf(symbol=symbol, response_text=response)
+            response = f"{response}\n\nPDF Export: `{pdf_path}`"
+        except Exception as pdf_error:
+            response = f"{response}\n\nPDF Export: failed ({str(pdf_error)})"
         
         state["messages"].append({
             "role":"assistant",
@@ -1054,12 +1231,10 @@ IMPORTANT:
             "full_analysis":"",
             "news_references":{},
             "agent_reports":{},
+            "llm_call_count":0,
             "should_continue":True,
             "error":None,
             "step_count":0            
         }
         final_state=await self.graph.ainvoke(initial_state)
         return final_state
-
-
-

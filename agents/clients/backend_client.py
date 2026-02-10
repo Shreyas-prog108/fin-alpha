@@ -351,7 +351,7 @@ class BackendClient:
             payload = {
                 "symbol": symbol,
                 "company_name": company_name,
-                "newsapi_articles": newsapi_articles[:3],
+                "newsapi_articles": newsapi_articles[:6],
                 "mint_articles": mint_articles[:3]
             }
             

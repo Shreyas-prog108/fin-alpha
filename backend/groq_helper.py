@@ -40,10 +40,6 @@ async def query_groq(prompt: str, use_search: bool = False) -> str:
     
     try:
         client = AsyncGroq(api_key=GROQ_API_KEY)
-        
-        # Note: Groq doesn't support search grounding natively like Gemini does.
-        # ignoring use_search for now.
-        
         chat_completion = await client.chat.completions.create(
             messages=[
                 {

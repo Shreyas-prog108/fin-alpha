@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Dict, Optional, Literal
+from typing import Any, Dict, List, Optional, TypedDict
 
 class AgentState(TypedDict,total=False):
     messages: List[Dict]
@@ -15,8 +15,8 @@ class AgentState(TypedDict,total=False):
     
     # Tool Execution
     tools_to_use: List[str]          
-    tool_results: Dict[str, any]    
-    prefetch_results: Dict[str, any]
+    tool_results: Dict[str, Any]
+    prefetch_results: Dict[str, Any]
     
     # Data Collection
     market_data: Dict                
@@ -25,7 +25,9 @@ class AgentState(TypedDict,total=False):
     predictions: Dict           
     
     # Analysis
-    insights: List[str]              
+    insights: List[str]
+    # Backward-compat alias used by older graph/state variants.
+    sights: List[str]
     recommendation: Optional[str]    
     confidence: str
     full_analysis: str
@@ -33,6 +35,7 @@ class AgentState(TypedDict,total=False):
     agent_reports: Dict[str, str]
     
     # Metadata
+    llm_call_count: int
     should_continue: bool            
     error: Optional[str]              
     step_count: int                  

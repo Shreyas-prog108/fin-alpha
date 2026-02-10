@@ -8,6 +8,8 @@ import os
 #=========================
 #REQUEST MODELS - WITH VALIDATION
 #=========================
+SYMBOL_REGEX = r"^[A-Z0-9&-]{1,15}(\.[A-Z]{1,4})?$"
+
 
 class NewsRequest(BaseModel):
     articles: list[str] = Field(..., min_items=1, max_items=100)
@@ -29,7 +31,7 @@ class ChartRequest(BaseModel):
     @classmethod
     def validate_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NSE|BO|L|HK|T))?$", v):
+        if not re.match(SYMBOL_REGEX, v):
             raise ValueError('Invalid stock symbol format')
         return v
 
@@ -41,13 +43,14 @@ class RiskAnalysisRequest(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        if not re.match(r"^[A-Z]{1,5}$", v):
-            raise ValueError('Invalid stock symbol. Must be 1-5 uppercase letters')
-        return v.upper()
+        v = v.strip().upper()
+        if not re.match(SYMBOL_REGEX, v):
+            raise ValueError("Invalid stock symbol format")
+        return v
 
 
 class PredictionRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]{1,5}$")
+    symbol: str = Field(..., min_length=1, max_length=20)
     data: list[dict] = Field(..., min_items=1, max_items=1000)
     method: Optional[str] = Field("ema", pattern="^(ema|linear)$")
     horizon: Optional[int] = Field(1, ge=1, le=365)
@@ -56,9 +59,10 @@ class PredictionRequest(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        if not re.match(r"^[A-Z]{1,5}$", v):
-            raise ValueError('Invalid stock symbol. Must be 1-5 uppercase letters')
-        return v.upper()
+        v = v.strip().upper()
+        if not re.match(SYMBOL_REGEX, v):
+            raise ValueError("Invalid stock symbol format")
+        return v
 
 
 class MarketMakerRequest(BaseModel):
@@ -86,7 +90,7 @@ class SearchAnalysisRequest(BaseModel):
     @classmethod
     def validate_symbol(cls, v):
         v = v.strip().upper()
-        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NS|NSE|BO|L|HK|T))?$", v):
+        if not re.match(SYMBOL_REGEX, v):
             raise ValueError("Invalid stock symbol format")
         return v
 
@@ -101,8 +105,7 @@ class NewsAnalysisRequest(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        # Allow symbols like RELIANCE.NSE, TCS.BO, AAPL
         v = v.strip().upper()
-        if not re.match(r"^[A-Z0-9&-]{1,15}(\.(?:NSE|BO|L|HK|T))?$", v):
+        if not re.match(SYMBOL_REGEX, v):
             raise ValueError('Invalid stock symbol format')
         return v

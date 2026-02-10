@@ -28,7 +28,7 @@ from backend.config import (
     GROQ_API_KEY,
     ALLOWED_ORIGINS,
     REQUIRE_HTTPS,
-    GROQ_API_URL,
+    GROQ_API_URL,   # Deprecated
 )
 from backend.models import (
     NewsRequest,
@@ -377,6 +377,104 @@ Provide a concise analysis (max 300 words)."""
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to analyze news"
         )
+
+
+@app.post("/api/analyze-chart")
+async def analyze_chart(
+    request: ChartRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Analyze chart/price action using Groq from OHLCV candles.
+    """
+    try:
+        logger.info(f"Chart analysis requested for {request.symbol}")
+        candles = request.data[-30:]
+        candles_text = "\n".join(
+            f"- {c.get('date', c.get('time', 'N/A'))}: O={c.get('open')} H={c.get('high')} L={c.get('low')} C={c.get('close')} V={c.get('volume')}"
+            for c in candles
+        )
+        prompt = f"""Analyze this stock chart data for {request.symbol}.
+
+Recent candles:
+{candles_text}
+
+Provide:
+1. Short-term trend (bullish/bearish/sideways)
+2. Key support and resistance levels
+3. Momentum/volatility observations
+4. One concise actionable takeaway
+
+Keep it concise and practical."""
+        analysis = await query_groq(prompt)
+        return {
+            "symbol": request.symbol,
+            "analysis": analysis,
+            "candles_analyzed": len(candles),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in analyze_chart: {type(e).__name__}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Chart analysis failed"
+        )
+
+
+@app.post("/api/summarize-news")
+async def summarize_news(
+    request: NewsRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Summarize a list of news article texts/headlines using Groq.
+    """
+    try:
+        logger.info(f"News summarization requested for {len(request.articles)} articles")
+        content = "\n".join(f"- {article[:400]}" for article in request.articles[:20])
+        prompt = f"""Summarize the following news items in 5-7 bullet points.
+Also include one final line stating overall sentiment: positive, negative, or mixed.
+
+News:
+{content}
+"""
+        summary = await query_groq(prompt)
+        return {
+            "summary": summary,
+            "article_count": len(request.articles),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in summarize_news: {type(e).__name__}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="News summarization failed"
+        )
+
+
+@app.get("/api/prediction/methods")
+async def prediction_methods(api_key: str = Depends(verify_api_key)):
+    """List supported price prediction methods."""
+    return {
+        "methods": [
+            {"name": "ema", "description": "Exponential moving average extrapolation"},
+            {"name": "linear", "description": "Linear regression trend projection"},
+        ]
+    }
+
+
+@app.get("/api/risk/levels")
+async def risk_levels(api_key: str = Depends(verify_api_key)):
+    """Return backend risk-level thresholds."""
+    return {
+        "levels": {
+            "low": {"volatility_lt": 0.05},
+            "medium": {"volatility_gte": 0.05, "volatility_lt": 0.15},
+            "high": {"volatility_gte": 0.15},
+        }
+    }
 
 
 @app.post("/api/analyze-risk")

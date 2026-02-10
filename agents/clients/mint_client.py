@@ -127,7 +127,7 @@ class MintClient:
             List of relevant news articles
         """
         # Clean symbol for matching
-        symbol_base = symbol.replace('.NS', '').replace('.BO', '').upper()
+        symbol_base = symbol.split(".", 1)[0].upper()
         company_lower = company_name.lower()
         
         all_articles = []

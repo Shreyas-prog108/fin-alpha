@@ -14,7 +14,10 @@ class AgentConfig(BaseSettings):
     """Agent configuration with security validation"""
     
     GROQ_API_KEY: str = Field(...)
+    PERPLEXITY_API_KEY: Optional[str] = Field(None)
+    PERPLEXITY_MODEL: str = Field("sonar")
     NEWSAPI_KEY: Optional[str] = Field(None)
+    ALPHAVANTAGE_API_KEY: Optional[str] = Field(None)
     NEWSAPI_URL: str = Field("https://newsapi.org/v2")
     BACKEND_URL: Optional[str] = Field("http://localhost:8000")   
     API_KEY: Optional[str] = Field(None) 
