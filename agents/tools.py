@@ -17,6 +17,8 @@ mint_client = get_mint_client()
 perplexity = get_perplexity_client()
 news_api_client = get_news_client()
 
+MAX_NEWS_ARTICLES_FOR_LLM = 3
+
 _NEWS_TOKEN_STOPWORDS = {
     "the", "and", "for", "with", "from", "this", "that", "stock", "share",
     "shares", "limited", "ltd", "inc", "corp", "company", "group", "holdings",
@@ -498,7 +500,7 @@ def get_stock_news(
             company_name=company_name,
             days=days,
             category=category,
-            limit=20,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
         return json.dumps({"articles": articles, "count": len(articles)}, indent=2)
     except Exception as e:
@@ -520,7 +522,7 @@ def analyze_news_sentiment(
             company_name=company_name,
             days=days,
             category=category,
-            limit=20,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
         if not articles:
             return json.dumps({"sentiment": "neutral", "reason": "No recent news found"})
@@ -548,7 +550,7 @@ def analyze_news_sentiment(
                 "neutral_count": neutral,
                 "confidence": "medium",
                 "summary": f"Based on {len(articles)} recent articles.",
-                "top_headlines": [a.get("title", "") for a in articles[:5]],
+                "top_headlines": [a.get("title", "") for a in articles[:MAX_NEWS_ARTICLES_FOR_LLM]],
             },
             indent=2,
         )
@@ -665,13 +667,13 @@ async def summarize_news_articles(
             company_name=company_name,
             days=days,
             category=category,
-            limit=20,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
         if not articles:
             return json.dumps({"summary": "No recent news articles found for this stock."})
 
         summaries = []
-        for article in articles[:20]:
+        for article in articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
             title = article.get("title", "").strip()
             description = article.get("description", "").strip()
             source = article.get("source", "Unknown")
@@ -682,7 +684,7 @@ async def summarize_news_articles(
             {
                 "summary": backend_result.get("summary", ""),
                 "article_count": backend_result.get("article_count", len(articles)),
-                "sources": list(set(a.get("source", "Unknown") for a in articles[:10])),
+                "sources": list(set(a.get("source", "Unknown") for a in articles[:MAX_NEWS_ARTICLES_FOR_LLM])),
             },
             indent=2,
         )
@@ -712,21 +714,21 @@ async def analyze_combined_news(
             days=days,
             category="general",
             limit=10,
-        ), limit=3)
+        ), limit=MAX_NEWS_ARTICLES_FOR_LLM)
 
         newsapi_articles = _get_newsapi_stock_news(
             symbol=symbol,
             company_name=company_name,
             days=days,
             category="general",
-            limit=3,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
 
         mint_articles = mint_client.get_stock_news(
             symbol=symbol,
             company_name=company_name,
             limit=10,
-        )[:3]
+        )[:MAX_NEWS_ARTICLES_FOR_LLM]
 
         print(
             f"[COMBINED NEWS] Perplexity: {len(perplexity_articles)} articles, "
@@ -752,7 +754,7 @@ async def analyze_combined_news(
                 *[dict(a, source=a.get("source") or "Perplexity") for a in perplexity_articles],
                 *[dict(a, source=a.get("source") or "NewsAPI") for a in newsapi_articles],
             ],
-            limit=6,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
         result = await backend.analyze_combined_news(
             symbol=symbol,
@@ -769,15 +771,15 @@ async def analyze_combined_news(
             all_headlines = []
             sentiments = []
 
-            for a in perplexity_articles[:3]:
+            for a in perplexity_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
                 all_headlines.append(f"[Perplexity] {a.get('title', 'N/A')}")
                 sentiments.append(a.get("sentiment", "neutral"))
 
-            for a in newsapi_articles[:3]:
+            for a in newsapi_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
                 all_headlines.append(f"[NewsAPI] {a.get('title', 'N/A')}")
                 sentiments.append(a.get("sentiment", "neutral"))
 
-            for a in mint_articles[:3]:
+            for a in mint_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
                 all_headlines.append(f"[Mint] {a.get('title', 'N/A')}")
                 sentiments.append(a.get("sentiment", "neutral"))
 
@@ -821,7 +823,7 @@ async def search_grounded_analysis(
             company_name=company_name,
             days=news_days,
             category="general",
-            limit=8,
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
         short_analysis = _build_short_stock_analysis(
             symbol=symbol,
@@ -836,7 +838,7 @@ async def search_grounded_analysis(
             "Use this stock snapshot and recent headlines as grounding context, and provide "
             "a concise investment view with BUY/HOLD/SELL.\n\n"
             f"Stock Snapshot:\n{json.dumps(stock_data, indent=2)}\n\n"
-            f"Recent News:\n{json.dumps(news_articles[:5], indent=2)}"
+            f"Recent News:\n{json.dumps(news_articles[:MAX_NEWS_ARTICLES_FOR_LLM], indent=2)}"
         )
         result = perplexity.quick_query(prompt)
 
@@ -897,7 +899,7 @@ async def quick_search_query(query: str) -> str:
                     company_name=company_name,
                     days=7,
                     category="general",
-                    limit=5,
+                    limit=MAX_NEWS_ARTICLES_FOR_LLM,
                 )
             except Exception:
                 news_articles = []
@@ -913,7 +915,7 @@ async def quick_search_query(query: str) -> str:
                 f"{query}\n\nUse this latest stock context in your answer:\n"
                 f"Symbol: {symbol}\nCompany: {company_name}\n"
                 f"Stock Snapshot: {json.dumps(stock_data, indent=2)}\n"
-                f"Recent News: {json.dumps(news_articles, indent=2)}"
+                f"Recent News: {json.dumps(news_articles[:MAX_NEWS_ARTICLES_FOR_LLM], indent=2)}"
             )
         else:
             enriched_query = query

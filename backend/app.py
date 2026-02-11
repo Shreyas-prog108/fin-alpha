@@ -52,6 +52,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+MAX_NEWS_ARTICLES_FOR_LLM = 3
 
 app = FastAPI(
     title="fin-alpha - Financial Market Analysis API",
@@ -279,11 +280,15 @@ async def analyze_news(
     try:
         logger.info(f"News analysis requested for {request.symbol}")
         
-        # Prepare articles summary
+        # Prepare articles summary (hard cap for LLM token safety)
         all_articles = []
+        newsapi_used = 0
+        mint_used = 0
         
         # Process NewsAPI articles
-        for article in request.newsapi_articles[:3]:
+        for article in request.newsapi_articles:
+            if len(all_articles) >= MAX_NEWS_ARTICLES_FOR_LLM:
+                break
             all_articles.append({
                 "source": article.get("source", "NewsAPI"),
                 "title": article.get("title", ""),
@@ -291,9 +296,12 @@ async def analyze_news(
                 "sentiment": article.get("sentiment", "neutral"),
                 "sentiment_score": article.get("sentiment_score", 0)
             })
+            newsapi_used += 1
         
         # Process LiveMint articles
-        for article in request.mint_articles[:3]:
+        for article in request.mint_articles:
+            if len(all_articles) >= MAX_NEWS_ARTICLES_FOR_LLM:
+                break
             all_articles.append({
                 "source": "LiveMint",
                 "title": article.get("title", ""),
@@ -301,6 +309,7 @@ async def analyze_news(
                 "sentiment": article.get("sentiment", "neutral"),
                 "sentiment_score": article.get("sentiment_score", 0)
             })
+            mint_used += 1
         
         if not all_articles:
             return {
@@ -363,10 +372,10 @@ Provide a concise analysis (max 300 words)."""
             },
             "articles_analyzed": len(all_articles),
             "sources": {
-                "newsapi": len(request.newsapi_articles[:3]),
-                "livemint": len(request.mint_articles[:3])
+                "newsapi": newsapi_used,
+                "livemint": mint_used,
             },
-            "top_headlines": [a["title"] for a in all_articles[:3]]
+            "top_headlines": [a["title"] for a in all_articles[:MAX_NEWS_ARTICLES_FOR_LLM]]
         }
         
     except HTTPException:
@@ -432,7 +441,10 @@ async def summarize_news(
     """
     try:
         logger.info(f"News summarization requested for {len(request.articles)} articles")
-        content = "\n".join(f"- {article[:400]}" for article in request.articles[:20])
+        content = "\n".join(
+            f"- {article[:400]}"
+            for article in request.articles[:MAX_NEWS_ARTICLES_FOR_LLM]
+        )
         prompt = f"""Summarize the following news items in 5-7 bullet points.
 Also include one final line stating overall sentiment: positive, negative, or mixed.
 

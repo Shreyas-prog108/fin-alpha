@@ -23,8 +23,8 @@ GREETINGS = {
 }
 
 GREETING_RESPONSES = {
-    "hi": "👋 Hi there! I'm FinAgent, your financial analysis assistant. Ask me about any stock - for example:\n• \"What's the price of Apple?\"\n• \"Analyze Tesla for investment\"\n• \"Give me risk analysis for HDFC Bank\"",
-    "help": "🤖 **FinAgent Help**\n\nI can help you with:\n• **Stock prices**: \"What's the price of Reliance?\"\n• **Investment analysis**: \"Should I invest in TCS?\"\n• **Risk assessment**: \"Risk analysis for Infosys\"\n• **Sentiment**: \"What's the sentiment on HDFC Bank?\"\n• **News**: \"Latest news about Tesla\"\n\nJust type your question!",
+    "hi": "👋 Hi there! I'm finalpha, your financial analysis assistant. Ask me about any stock - for example:\n• \"What's the price of Apple?\"\n• \"Analyze Tesla for investment\"\n• \"Give me risk analysis for HDFC Bank\"",
+    "help": "🤖 **finalpha Help**\n\nI can help you with:\n• **Stock prices**: \"What's the price of Reliance?\"\n• **Investment analysis**: \"Should I invest in TCS?\"\n• **Risk assessment**: \"Risk analysis for Infosys\"\n• **Sentiment**: \"What's the sentiment on HDFC Bank?\"\n• **News**: \"Latest news about Tesla\"\n\nJust type your question!",
     "default": "👋 Hello! How can I help you with your financial analysis today? Ask me about any stock!"
 }
 
@@ -46,7 +46,7 @@ def get_greeting_response(text: str) -> str:
 
 async def main():
     agent = FinAgent()
-    print("🤖 FinAgent - Financial Analysis Agent")
+    print("🤖 finalpha - Financial Analysis Agent")
     print("=" * 50)
     print("Ask me anything about stocks!")
     print("Type 'quit' to exit\n")

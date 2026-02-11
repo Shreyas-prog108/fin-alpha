@@ -21,6 +21,8 @@ from .prompts.subagent_prompts import (
     PREDICTION_AGENT_PROMPT
 )
 
+MAX_NEWS_ARTICLES_FOR_LLM = 3
+
 class FinAgent:
     """
     Main Financial Analysis Agent using LangGraph
@@ -808,7 +810,7 @@ Return concise bullet points (3-5) with actionable insights."""
             stock_news_articles = news_data
 
         news_articles = []
-        for article in stock_news_articles[:5]:
+        for article in stock_news_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
             if isinstance(article, dict):
                 news_articles.append({
                     "title": article.get("title", "N/A"),
@@ -822,7 +824,7 @@ Return concise bullet points (3-5) with actionable insights."""
         if isinstance(combined_news_data, dict):
             raw_headlines = combined_news_data.get("top_headlines", [])
             if isinstance(raw_headlines, list):
-                for item in raw_headlines[:5]:
+                for item in raw_headlines[:MAX_NEWS_ARTICLES_FOR_LLM]:
                     if isinstance(item, dict):
                         combined_headlines.append(item)
                     else:
@@ -877,7 +879,7 @@ CRITICAL REQUIREMENTS:
 
 4. **Supporting News References** (ONLY IF NEWS PROVIDED):
    - If news_articles is empty, explicitly state "No news data available."
-   - If provided, include 3-5 references in this format:
+   - If provided, include 1-3 references in this format:
      • [Headline] - Source
        Link: [URL]
        Relevance: [1 sentence explaining how this supports your recommendation]
@@ -911,7 +913,7 @@ IMPORTANT:
         
         state["insights"] = insights if insights else [content[:200] + "..."]
         state["full_analysis"] = content
-        headlines = stock_news_articles[:5] if isinstance(stock_news_articles, list) else []
+        headlines = stock_news_articles[:MAX_NEWS_ARTICLES_FOR_LLM] if isinstance(stock_news_articles, list) else []
         sentiment = "neutral"
         sentiment_score = 0.0
         if isinstance(sentiment_data, dict):
@@ -922,7 +924,7 @@ IMPORTANT:
             "headlines": headlines[:3] if isinstance(headlines, list) else [], 
             "sentiment": sentiment,
             "sentiment_score": sentiment_score,
-            "combined_headlines": combined_headlines[:5] if isinstance(combined_headlines, list) else [],
+            "combined_headlines": combined_headlines[:MAX_NEWS_ARTICLES_FOR_LLM] if isinstance(combined_headlines, list) else [],
             "combined_analysis": combined_news_data.get("analysis", "") if isinstance(combined_news_data, dict) else "",
             "combined_sentiment": combined_news_data.get("sentiment_summary", "neutral") if isinstance(combined_news_data, dict) else "neutral",
             "combined_articles_analyzed": combined_news_data.get("articles_analyzed", 0) if isinstance(combined_news_data, dict) else 0,
@@ -1106,7 +1108,7 @@ IMPORTANT:
             if headlines and len(headlines) > 0:
                 news_section = f"\n\n### 📰 Recent News Articles\n\n"
                 news_section += f"**Market Sentiment:** {sentiment.upper()} (Score: {score:.2f})\n\n"
-                for i, headline in enumerate(headlines[:5], 1):
+                for i, headline in enumerate(headlines[:MAX_NEWS_ARTICLES_FOR_LLM], 1):
                     if isinstance(headline, dict):
                         title = headline.get('title', headline.get('headline', headline.get('description', 'N/A')))
                         source = headline.get('source', headline.get('publisher', headline.get('author', 'Unknown')))
@@ -1130,7 +1132,7 @@ IMPORTANT:
                 )
                 if combined_analysis:
                     news_section += f"{combined_analysis}\n\n"
-                for i, headline in enumerate(combined_headlines[:5], 1):
+                for i, headline in enumerate(combined_headlines[:MAX_NEWS_ARTICLES_FOR_LLM], 1):
                     if isinstance(headline, dict):
                         title = headline.get("title", "N/A")
                         source = headline.get("source", "Unknown")

@@ -11,7 +11,7 @@
 
 ## ✨ Key Features
 
-* **🤖 Agentic Interface**: Chat naturally with `FinAgent` to analyze stocks, ask for recommendations, and get explained insights.
+* **🤖 Agentic Interface**: Chat naturally with `finalpha` to analyze stocks, ask for recommendations, and get explained insights.
 * **📊 Comprehensive Analysis**:
   * **Real-time Data**: Perplexity-grounded stock/news retrieval with Alpha Vantage fallback for robustness.
   * **Technical Indicators**: RSI, MACD, Bollinger Bands, Moving Averages.
@@ -45,7 +45,7 @@
 
 ```mermaid
 graph TD
-    A[User Query] -->|Input| B(FinAgent - LangGraph)
+    A[User Query] -->|Input| B(finalpha - LangGraph)
     B -->|Parse Query| C[Groq LLM]
     C -->|Extract Intent & Symbols| D{Symbol Resolution}
   

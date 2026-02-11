@@ -2,6 +2,8 @@ import httpx
 import os
 from typing import Dict, List, Optional
 
+MAX_NEWS_ARTICLES_FOR_LLM = 3
+
 class BackendClient:
     """
     Client for FinAgent FastAPI backend
@@ -348,11 +350,17 @@ class BackendClient:
             }
         """
         try:
+            reserve_for_mint = 1 if mint_articles else 0
+            primary_slots = max(MAX_NEWS_ARTICLES_FOR_LLM - reserve_for_mint, 0)
+            primary_articles = newsapi_articles[:primary_slots]
+            remaining_slots = MAX_NEWS_ARTICLES_FOR_LLM - len(primary_articles)
+            secondary_articles = mint_articles[:remaining_slots] if remaining_slots > 0 else []
+
             payload = {
                 "symbol": symbol,
                 "company_name": company_name,
-                "newsapi_articles": newsapi_articles[:6],
-                "mint_articles": mint_articles[:3]
+                "newsapi_articles": primary_articles,
+                "mint_articles": secondary_articles,
             }
             
             response = await self.client.post(
