@@ -9,6 +9,7 @@ from .clients import (
     get_mint_client,
     get_perplexity_client,
     get_news_client,
+    get_google_search_client,
 )
 
 backend = get_backend_client()
@@ -16,6 +17,7 @@ alphavantage = get_alphavantage_client()
 mint_client = get_mint_client()
 perplexity = get_perplexity_client()
 news_api_client = get_news_client()
+google_search_client = get_google_search_client()
 
 MAX_NEWS_ARTICLES_FOR_LLM = 3
 
@@ -104,42 +106,166 @@ def _get_historical_data(symbol: str, period: str = "1mo") -> List[Dict]:
 
 
 def _get_stock_price_data(symbol: str) -> Dict:
-    """Fetch quote using Perplexity first, then Alpha Vantage fallback."""
+    """Fetch quote using Perplexity first (better for Indian stocks), Alpha Vantage fallback."""
+    requested_symbol = (symbol or "").strip().upper()
+    normalized_symbol = _canonical_symbol(requested_symbol)
+    
+    # Default response in case everything fails
+    default_result = {
+        "symbol": normalized_symbol,
+        "requested_symbol": requested_symbol,
+        "normalized_symbol": normalized_symbol,
+        "company_name": symbol,
+        "current_price": 0,
+        "change": 0,
+        "change_percent": 0,
+        "volume": 0,
+        "market_cap": 0,
+        "pe_ratio": 0,
+        "beta": 0,
+        "fifty_two_week_high": 0,
+        "fifty_two_week_low": 0,
+        "sector": "Unknown",
+        "industry": "Unknown",
+        "currency": "INR" if ".NSE" in symbol.upper() or ".BSE" in symbol.upper() else "USD",
+        "exchange": "NSE" if ".NSE" in symbol.upper() else ("BSE" if ".BSE" in symbol.upper() else "Unknown"),
+    }
+    
     try:
-        requested_symbol = (symbol or "").strip().upper()
-        normalized_symbol = _canonical_symbol(requested_symbol)
+        # Primary: Perplexity (better for Indian stocks)
         result = perplexity.get_stock_price(symbol)
-        returned_symbol = result.get("symbol", requested_symbol)
-        if not _symbols_equivalent(normalized_symbol, returned_symbol):
-            raise Exception(
-                "Perplexity symbol mismatch "
-                f"(requested={normalized_symbol}, returned={returned_symbol})"
-            )
+        if result and isinstance(result, dict) and result.get("current_price", 0) > 0:
+            result["source"] = "perplexity_primary"
+            result["requested_symbol"] = requested_symbol
+            result["normalized_symbol"] = normalized_symbol
+            return result
+    except Exception as e:
+        print(f"[PRICE] Perplexity failed: {e}")
+        
+    # Fallback: Alpha Vantage (may be rate limited)
+    try:
+        result = alphavantage.get_current_price(normalized_symbol)
+        result["source"] = "alphavantage_fallback"
         result["requested_symbol"] = requested_symbol
         result["normalized_symbol"] = normalized_symbol
         return result
-    except Exception as perplexity_error:
+    except Exception as e:
+        print(f"[PRICE] Alpha Vantage failed: {e}")
+    
+    # Last resort: return default
+    default_result["source"] = "default_fallback"
+    return default_result
+
+
+def _enhance_with_llm(data: Dict, symbol: str) -> Dict:
+    """Enhance stock data with LLM for missing fields."""
+    try:
+        from .clients.perplexity_client import get_perplexity_client
+        pplx = get_perplexity_client()
+        
+        prompt = f"""
+Search for the latest stock data for {symbol.upper()}.
+Return ONLY valid JSON with these fields if available:
+{{
+  "company_name": "string",
+  "market_cap": number,
+  "pe_ratio": number,
+  "beta": number,
+  "fifty_two_week_high": number,
+  "fifty_two_week_low": number,
+  "sector": "string",
+  "industry": "string"
+}}
+Use null for unavailable data. No extra text.
+"""
+        pplx_result = pplx._chat(
+            messages=[
+                {"role": "system", "content": "You are a financial data API. Output JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=800
+        )
+        llm_data = pplx._parse_json(pplx_result["text"])
+        if isinstance(llm_data, dict):
+            for k, v in llm_data.items():
+                if v is not None and v != "" and v != 0:
+                    # Only fill in missing fields
+                    if not data.get(k) or data.get(k) == 0:
+                        data[k] = pplx._safe_float(v) if isinstance(v, (int, float, str)) else v
+    except Exception as e:
+        # Don't fail the whole process - just log and continue
+        print(f"[LLM ENHANCE] Failed: {e}")
+        
+        # Try fallback: extract data from text response directly
         try:
-            requested_symbol = (symbol or "").strip().upper()
-            normalized_symbol = _canonical_symbol(requested_symbol)
-            fallback = alphavantage.get_current_price(normalized_symbol)
-            fallback["source"] = "alphavantage_fallback"
-            fallback["requested_symbol"] = requested_symbol
-            fallback["alphavantage_symbol"] = normalized_symbol
-            fallback["warning"] = f"Perplexity failed: {str(perplexity_error)}"
-            return fallback
-        except Exception as alpha_error:
-            raise Exception(
-                f"Perplexity quote failed: {str(perplexity_error)}. "
-                f"Alpha Vantage fallback failed: {str(alpha_error)}"
+            from .clients.perplexity_client import get_perplexity_client
+            pplx = get_perplexity_client()
+            
+            # Try a simpler approach - just get the text and try to extract
+            prompt = f"""
+Provide the following stock data for {symbol.upper()} in plain text format (not JSON):
+- Company Name:
+- Market Cap: 
+- P/E Ratio:
+- Beta:
+- 52-Week High:
+- 52-Week Low:
+- Sector:
+- Industry:
+"""
+            pplx_result = pplx._chat(
+                messages=[
+                    {"role": "system", "content": "You are a financial data assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,
+                max_tokens=500
             )
+            # Try to parse numbers from the text response
+            text = pplx_result.get("text", "")
+            import re
+            
+            # Extract market cap patterns like "5.2 trillion", "500 billion"
+            mc_match = re.search(r'(?:market\s*cap[:\s]*)([\d,\.]+)\s*(trillion|billion|million|crore|lakh)?', text, re.IGNORECASE)
+            if mc_match and (not data.get("market_cap") or data.get("market_cap") == 0):
+                val = float(mc_match.group(1).replace(",", ""))
+                unit = mc_match.group(2).lower() if mc_match.group(2) else ""
+                if unit == "trillion":
+                    val *= 1e12
+                elif unit == "billion":
+                    val *= 1e9
+                elif unit == "million":
+                    val *= 1e6
+                elif unit == "crore":
+                    val *= 1e7
+                elif unit == "lakh":
+                    val *= 1e5
+                data["market_cap"] = val
+            
+            # Extract sector
+            sector_match = re.search(r'sector[:\s]*([A-Za-z\s]+?)(?:\n|$)', text, re.IGNORECASE)
+            if sector_match and (not data.get("sector") or data.get("sector") == "Unknown"):
+                data["sector"] = sector_match.group(1).strip()
+            
+            # Extract industry
+            industry_match = re.search(r'industry[:\s]*([A-Za-z\s]+?)(?:\n|$)', text, re.IGNORECASE)
+            if industry_match and (not data.get("industry") or data.get("industry") == "Unknown"):
+                data["industry"] = industry_match.group(1).strip()
+                
+        except Exception as fallback_error:
+            print(f"[LLM ENHANCE] Text fallback also failed: {fallback_error}")
+        
+    return data
 
 
 def _get_stock_info_data(symbol: str) -> Dict:
-    """Fetch detailed info from Perplexity with symbol consistency checks."""
+    """Fetch detailed info using Perplexity first (better for Indian stocks), Alpha Vantage fallback."""
     requested_symbol = (symbol or "").strip().upper()
     normalized_symbol = _canonical_symbol(requested_symbol)
+    
     try:
+        # Primary: Perplexity (better for Indian stocks)
         result = perplexity.get_stock_info(symbol)
         returned_symbol = result.get("symbol", requested_symbol)
         if not _symbols_equivalent(normalized_symbol, returned_symbol):
@@ -147,35 +273,52 @@ def _get_stock_info_data(symbol: str) -> Dict:
                 "Perplexity symbol mismatch "
                 f"(requested={normalized_symbol}, returned={returned_symbol})"
             )
+        result["source"] = "perplexity_primary"
         result["requested_symbol"] = requested_symbol
         result["normalized_symbol"] = normalized_symbol
-        return result
+        
+        # If Perplexity returned good data, use it
+        if result.get("company_name"):
+            return result
+        
+        raise Exception("Perplexity returned no useful data")
+        
     except Exception as perplexity_error:
-        fallback_quote = alphavantage.get_current_price(normalized_symbol)
-        return {
-            "symbol": normalized_symbol,
-            "company_name": fallback_quote.get("company_name", normalized_symbol),
-            "exchange": fallback_quote.get("exchange", ""),
-            "currency": fallback_quote.get("currency", ""),
-            "sector": "",
-            "industry": "",
-            "country": "",
-            "market_cap": fallback_quote.get("market_cap", 0),
-            "enterprise_value": 0,
-            "pe_ratio": 0,
-            "forward_pe": 0,
-            "price_to_book": 0,
-            "eps": 0,
-            "dividend_yield": 0,
-            "beta": 0,
-            "fifty_two_week_high": 0,
-            "fifty_two_week_low": 0,
-            "description": "",
-            "source": "alphavantage_fallback",
-            "requested_symbol": requested_symbol,
-            "alphavantage_symbol": normalized_symbol,
-            "warning": f"Perplexity failed: {str(perplexity_error)}",
-        }
+        # Fallback: Alpha Vantage
+        try:
+            fallback_quote = alphavantage.get_current_price(normalized_symbol)
+            result = {
+                "symbol": normalized_symbol,
+                "company_name": fallback_quote.get("company_name", normalized_symbol),
+                "exchange": fallback_quote.get("exchange", ""),
+                "currency": fallback_quote.get("currency", ""),
+                "sector": "",
+                "industry": "",
+                "country": "",
+                "market_cap": fallback_quote.get("market_cap", 0),
+                "enterprise_value": 0,
+                "pe_ratio": fallback_quote.get("pe_ratio", 0),
+                "forward_pe": 0,
+                "price_to_book": 0,
+                "eps": 0,
+                "dividend_yield": 0,
+                "beta": fallback_quote.get("beta", 0),
+                "fifty_two_week_high": fallback_quote.get("fifty_two_week_high", 0),
+                "fifty_two_week_low": fallback_quote.get("fifty_two_week_low", 0),
+                "description": "",
+                "source": "alphavantage_fallback",
+                "requested_symbol": requested_symbol,
+                "normalized_symbol": normalized_symbol,
+                "warning": f"Perplexity failed: {str(perplexity_error)}",
+            }
+            return result
+        except Exception as alpha_error:
+            return {
+                "symbol": normalized_symbol,
+                "company_name": normalized_symbol,
+                "source": "failed",
+                "error": f"Perplexity: {str(perplexity_error)}, Alpha Vantage: {str(alpha_error)}"
+            }
 
 
 def _get_stock_news_data(
@@ -185,23 +328,13 @@ def _get_stock_news_data(
     category: str = "general",
     limit: int = 10,
 ) -> List[Dict]:
-    """Fetch stock news from Perplexity + NewsAPI + LiveMint."""
-    perplexity_articles: List[Dict] = []
-    newsapi_articles: List[Dict] = []
+    """Fetch stock news — LiveMint (primary) → Google Search (secondary) → NewsAPI (fallback)."""
     mint_articles: List[Dict] = []
+    google_articles: List[Dict] = []
+    newsapi_articles: List[Dict] = []
     errors = []
 
-    try:
-        perplexity_articles = perplexity.get_stock_news(
-            symbol=symbol,
-            company_name=company_name,
-            days=days,
-            category=category,
-            limit=limit,
-        )
-    except Exception as e:
-        errors.append(f"Perplexity: {str(e)}")
-
+    # Primary: LiveMint
     try:
         mint_articles = mint_client.get_stock_news(
             symbol=symbol,
@@ -211,6 +344,18 @@ def _get_stock_news_data(
     except Exception as e:
         errors.append(f"LiveMint: {str(e)}")
 
+    # Secondary: Google Search (Gemini grounding)
+    try:
+        google_articles = google_search_client.get_stock_news(
+            symbol=symbol,
+            company_name=company_name,
+            days=days,
+            limit=limit,
+        )
+    except Exception as e:
+        errors.append(f"GoogleSearch: {str(e)}")
+
+    # Fallback: NewsAPI
     try:
         newsapi_articles = news_api_client.get_stock_news(
             symbol=symbol,
@@ -221,15 +366,15 @@ def _get_stock_news_data(
     except Exception as e:
         errors.append(f"NewsAPI: {str(e)}")
 
-    perplexity_articles = _filter_relevant_articles(perplexity_articles, symbol, company_name)
-    newsapi_articles = _filter_relevant_articles(newsapi_articles, symbol, company_name)
     mint_articles = _filter_relevant_articles(mint_articles, symbol, company_name)
+    google_articles = _filter_relevant_articles(google_articles, symbol, company_name)
+    newsapi_articles = _filter_relevant_articles(newsapi_articles, symbol, company_name)
 
     merged = _merge_news_articles(
         [
-            *perplexity_articles,
-            *newsapi_articles,
             *mint_articles,
+            *google_articles,
+            *newsapi_articles,
         ],
         limit=limit,
     )
@@ -561,11 +706,11 @@ def analyze_news_sentiment(
 # TOOL-9: GET-MARKET-NEWS
 @tool
 def get_market_news(limit: int = 10) -> str:
-    """Get broad market news using Perplexity + NewsAPI."""
+    """Get broad market news using LiveMint + Google Search."""
     try:
-        perplexity_articles = perplexity.get_market_news(limit=limit)
-        newsapi_articles = news_api_client.get_market_news(limit=limit)
-        articles = _merge_news_articles(perplexity_articles + newsapi_articles, limit=limit)
+        mint_articles = mint_client.get_market_news(limit=limit) if hasattr(mint_client, "get_market_news") else []
+        google_articles = google_search_client.get_market_news(limit=limit)
+        articles = _merge_news_articles(mint_articles + google_articles, limit=limit)
         return json.dumps({"articles": articles, "count": len(articles)}, indent=2)
     except Exception as e:
         return json.dumps({"error": f"Failed to fetch market news: {str(e)}"})
@@ -574,8 +719,118 @@ def get_market_news(limit: int = 10) -> str:
 # TOOL-10: GET-FINANCIAL-METRICS
 @tool
 def get_financial_metrics(symbol: str) -> str:
-    """Get Financial Metrics."""
-    return json.dumps({"error": "Financial metrics provider removed"})
+    """Get comprehensive financial metrics including profitability, valuation, growth, and leverage ratios."""
+    try:
+        from .clients.perplexity_client import get_perplexity_client
+        pplx = get_perplexity_client()
+        
+        # Try to get basic data - but don't fail completely if these don't work
+        try:
+            info = _get_stock_info_data(symbol)
+        except Exception as e:
+            print(f"[FINANCIAL METRICS] Info fetch failed: {e}")
+            info = {}
+        
+        try:
+            price_data = _get_stock_price_data(symbol)
+        except Exception as e:
+            print(f"[FINANCIAL METRICS] Price fetch failed: {e}")
+            price_data = {}
+        
+        company_name = price_data.get("company_name", info.get("company_name", symbol)) or symbol
+        
+        # Direct query to Perplexity for all financial metrics
+        prompt = f"""Search for complete financial data for {company_name} (ticker: {symbol.upper()}).
+
+Return ONLY valid JSON with these exact fields:
+{{
+  "market_cap": number (in crores for Indian stocks),
+  "enterprise_value": number,
+  "pe_ratio": number,
+  "forward_pe": number,
+  "price_to_book": number,
+  "price_to_sales": number,
+  "ev_to_ebitda": number,
+  "peg_ratio": number,
+  "profit_margin": number (as percentage),
+  "operating_margin": number,
+  "gross_margin": number,
+  "roe": number,
+  "roa": number,
+  "roic": number,
+  "revenue_growth": number (YoY percentage),
+  "earnings_growth": number,
+  "eps": number,
+  "dividend_yield": number,
+  "debt_to_equity": number,
+  "current_ratio": number,
+  "quick_ratio": number,
+  "beta": number,
+  "fifty_two_week_high": number,
+  "fifty_two_week_low": number,
+  "sector": "string",
+  "industry": "string"
+}}
+
+If exact value unavailable, provide your best estimate based on recent data. Use null for truly unavailable data. Output JSON only."""
+        
+        pplx_result = pplx._chat(
+            messages=[
+                {"role": "system", "content": "You are a financial data API. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+        
+        llm_metrics = pplx._parse_json(pplx_result.get("text", "{}"))
+        
+        # Build result with fallbacks from all sources
+        result = {
+            "symbol": symbol,
+            "market_cap": llm_metrics.get("market_cap") or info.get("market_cap", 0) or price_data.get("market_cap", 0),
+            "enterprise_value": llm_metrics.get("enterprise_value") or info.get("enterprise_value", 0),
+            "pe_ratio": llm_metrics.get("pe_ratio") or info.get("pe_ratio", 0) or price_data.get("pe_ratio", 0),
+            "forward_pe": llm_metrics.get("forward_pe") or info.get("forward_pe", 0),
+            "price_to_book": llm_metrics.get("price_to_book") or info.get("price_to_book", 0),
+            "price_to_sales": llm_metrics.get("price_to_sales") or info.get("price_to_sales", 0),
+            "ev_to_ebitda": llm_metrics.get("ev_to_ebitda") or info.get("ev_to_ebitda", 0),
+            "peg_ratio": llm_metrics.get("peg_ratio") or info.get("peg_ratio", 0),
+            "eps": llm_metrics.get("eps") or info.get("eps", 0),
+            "eps_growth": llm_metrics.get("eps_growth") or llm_metrics.get("earnings_growth") or info.get("eps_growth", 0),
+            "revenue": llm_metrics.get("revenue") or info.get("revenue", 0),
+            "revenue_growth": llm_metrics.get("revenue_growth") or info.get("revenue_growth", 0),
+            "gross_margin": llm_metrics.get("gross_margin") or info.get("gross_margin", 0),
+            "operating_margin": llm_metrics.get("operating_margin") or info.get("operating_margin", 0),
+            "profit_margin": llm_metrics.get("profit_margin") or info.get("profit_margin", 0),
+            "roe": llm_metrics.get("roe") or info.get("roe", 0),
+            "roa": llm_metrics.get("roa") or info.get("roa", 0),
+            "roic": llm_metrics.get("roic") or info.get("roic", 0),
+            "dividend_yield": llm_metrics.get("dividend_yield") or info.get("dividend_yield", 0),
+            "payout_ratio": llm_metrics.get("payout_ratio") or info.get("payout_ratio", 0),
+            "current_ratio": llm_metrics.get("current_ratio") or info.get("current_ratio", 0),
+            "quick_ratio": llm_metrics.get("quick_ratio") or info.get("quick_ratio", 0),
+            "debt_to_equity": llm_metrics.get("debt_to_equity") or info.get("debt_to_equity", 0),
+            "net_debt_to_ebitda": llm_metrics.get("net_debt_to_ebitda") or info.get("net_debt_to_ebitda", 0),
+            "beta": llm_metrics.get("beta") or info.get("beta", 0) or price_data.get("beta", 0),
+            "fifty_two_week_high": llm_metrics.get("fifty_two_week_high") or info.get("fifty_two_week_high", 0) or price_data.get("fifty_two_week_high", 0),
+            "fifty_two_week_low": llm_metrics.get("fifty_two_week_low") or info.get("fifty_two_week_low", 0) or price_data.get("fifty_two_week_low", 0),
+            "currency": price_data.get("currency", "USD"),
+            "sector": llm_metrics.get("sector") or info.get("sector", price_data.get("sector", "Unknown")),
+            "industry": llm_metrics.get("industry") or info.get("industry", price_data.get("industry", "Unknown")),
+        }
+        
+        # Clean up None values to 0
+        for key in result:
+            if result[key] is None:
+                result[key] = 0
+        
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        import traceback
+        print(f"[FINANCIAL METRICS] Error: {e}")
+        print(traceback.format_exc())
+        return json.dumps({"error": f"Failed to fetch financial metrics: {str(e)}"})
 
 
 # TOOL-11: COMPARE-STOCKS
@@ -700,21 +955,29 @@ async def analyze_combined_news(
     days: int = 7,
 ) -> str:
     """
-    Analyze news from Perplexity + NewsAPI + LiveMint and get AI-powered insights.
+    Analyze news from LiveMint + Google Search + NewsAPI and get AI-powered insights.
     Fetches top source-specific items and passes them to backend for analysis.
     """
-    perplexity_articles: List[Dict] = []
-    newsapi_articles: List[Dict] = []
     mint_articles: List[Dict] = []
+    google_articles: List[Dict] = []
+    newsapi_articles: List[Dict] = []
 
     try:
-        perplexity_articles = _merge_news_articles(perplexity.get_stock_news(
+        mint_articles = mint_client.get_stock_news(
             symbol=symbol,
             company_name=company_name,
-            days=days,
-            category="general",
             limit=10,
-        ), limit=MAX_NEWS_ARTICLES_FOR_LLM)
+        )[:MAX_NEWS_ARTICLES_FOR_LLM]
+
+        google_articles = _merge_news_articles(
+            google_search_client.get_stock_news(
+                symbol=symbol,
+                company_name=company_name,
+                days=days,
+                limit=10,
+            ),
+            limit=MAX_NEWS_ARTICLES_FOR_LLM,
+        )
 
         newsapi_articles = _get_newsapi_stock_news(
             symbol=symbol,
@@ -724,19 +987,13 @@ async def analyze_combined_news(
             limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
 
-        mint_articles = mint_client.get_stock_news(
-            symbol=symbol,
-            company_name=company_name,
-            limit=10,
-        )[:MAX_NEWS_ARTICLES_FOR_LLM]
-
         print(
-            f"[COMBINED NEWS] Perplexity: {len(perplexity_articles)} articles, "
-            f"NewsAPI: {len(newsapi_articles)} articles, "
-            f"Mint: {len(mint_articles)} articles"
+            f"[COMBINED NEWS] Mint: {len(mint_articles)} articles, "
+            f"Google: {len(google_articles)} articles, "
+            f"NewsAPI: {len(newsapi_articles)} articles"
         )
 
-        if not perplexity_articles and not newsapi_articles and not mint_articles:
+        if not mint_articles and not google_articles and not newsapi_articles:
             return json.dumps(
                 {
                     "symbol": symbol,
@@ -747,12 +1004,11 @@ async def analyze_combined_news(
                 }
             )
 
-        # Keep backend payload key names for compatibility.
-        # Merge Perplexity + NewsAPI into the `newsapi_articles` channel.
+        # Merge Mint + Google into the primary channel; pass NewsAPI as secondary.
         backend_primary_news = _merge_news_articles(
             [
-                *[dict(a, source=a.get("source") or "Perplexity") for a in perplexity_articles],
-                *[dict(a, source=a.get("source") or "NewsAPI") for a in newsapi_articles],
+                *[dict(a, source=a.get("source") or "LiveMint") for a in mint_articles],
+                *[dict(a, source=a.get("source") or "Google Search") for a in google_articles],
             ],
             limit=MAX_NEWS_ARTICLES_FOR_LLM,
         )
@@ -760,7 +1016,7 @@ async def analyze_combined_news(
             symbol=symbol,
             company_name=company_name,
             newsapi_articles=backend_primary_news,
-            mint_articles=mint_articles,
+            mint_articles=newsapi_articles,
         )
 
         return json.dumps(result, indent=2)
@@ -771,16 +1027,16 @@ async def analyze_combined_news(
             all_headlines = []
             sentiments = []
 
-            for a in perplexity_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
-                all_headlines.append(f"[Perplexity] {a.get('title', 'N/A')}")
+            for a in mint_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
+                all_headlines.append(f"[Mint] {a.get('title', 'N/A')}")
+                sentiments.append(a.get("sentiment", "neutral"))
+
+            for a in google_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
+                all_headlines.append(f"[Google] {a.get('title', 'N/A')}")
                 sentiments.append(a.get("sentiment", "neutral"))
 
             for a in newsapi_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
                 all_headlines.append(f"[NewsAPI] {a.get('title', 'N/A')}")
-                sentiments.append(a.get("sentiment", "neutral"))
-
-            for a in mint_articles[:MAX_NEWS_ARTICLES_FOR_LLM]:
-                all_headlines.append(f"[Mint] {a.get('title', 'N/A')}")
                 sentiments.append(a.get("sentiment", "neutral"))
 
             positive = sentiments.count("positive")

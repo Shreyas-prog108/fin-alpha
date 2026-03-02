@@ -7,7 +7,6 @@
 
 **Fin-Alpha** is a state-of-the-art financial analysis agent that combines real-time market data, advanced risk metrics, and Generative AI to provide actionable investment insights.
 
-> **🚀 Powered by Groq+GPT-oss-20b**
 
 ## ✨ Key Features
 
@@ -15,17 +14,22 @@
 * **📊 Comprehensive Analysis**:
   * **Real-time Data**: Perplexity-grounded stock/news retrieval with Alpha Vantage fallback for robustness.
   * **Technical Indicators**: RSI, MACD, Bollinger Bands, Moving Averages.
-  * **Fundamental Data**: P/E, Market Cap, EPS, Sector comparison.
+  * **Fundamental Data**: P/E, P/B, EV/EBITDA, P/S, PEG, Dividend Yield, ROE, ROA, ROIC, etc.
 * **⚖️ Risk Intelligence**:
-  * Value at Risk (VaR) & CVaR calculations.
-  * Volatility analysis & Anomaly detection.
-  * Sharpe & Sortino ratios.
+  * Value at Risk (VaR) & Conditional VaR (CVaR) calculations.
+  * Volatility analysis (annualized, daily, vs sector benchmark).
+  * Sharpe, Sortino, Treynor, Information ratios.
+  * Maximum Drawdown & Anomaly detection.
+  * Beta, Alpha, R-Squared analysis.
 * **🔮 Predictive Models**:
   * Price forecasting using EMA and Linear Regression.
+  * Bull/Bear/Base case scenarios.
+  * Support/Resistance levels.
   * Market Making quotes (Avellaneda-Stoikov model).
 * **📰 News & Sentiment**:
-  * Aggregated news from Perplexity, NewsAPI and LiveMint.
+  * Aggregated news from Perplexity, NewsAPI, Google Search, and LiveMint.
   * AI-driven sentiment scoring and theme extraction.
+  * Multi-source news analysis with credibility weighting.
 * **📄 Export Capabilities**:
   * PDF report generation for analysis results.
 
@@ -37,50 +41,134 @@
   * `Perplexity API` (Primary stock/news grounding)
   * `Alpha Vantage` (Market data fallback)
   * `NewsAPI` (News aggregation)
+  * `Google Search` (News via Gemini grounding)
   * `LiveMint RSS` (Indian market news)
 * **Analysis**: `pandas`, `numpy`, `scipy`, `reportlab` (PDF export)
 * **CLI**: `typer`, `rich`, `prompt-toolkit`
 
-## 🔄 Execution Flow
+## 🔄 Architecture Overview
+
+### High-Level Flow
+
+```
+User Query → LangGraph Agent → Sub-Agents → Tools → Backend APIs → Synthesis → Report
+```
+
+### Data Flow Diagram
 
 ```mermaid
 graph TD
-    A[User Query] -->|Input| B(finalpha - LangGraph)
-    B -->|Parse Query| C[Groq LLM]
-    C -->|Extract Intent & Symbols| D{Symbol Resolution}
-  
-    D -->|Search Symbol| E[Alpha Vantage Symbol Search]
-    E -->|Return Symbol| F[Tool Router]
-  
-    F -->|Stock data tools| G[Perplexity Client]
-    G -.->|Fallback on Error| H[Alpha Vantage]
-  
-    F -->|get_stock_news| I[News Aggregator]
-    I -->|Fetch| J1[Perplexity]
-    I -->|Scrape| J2[LiveMint]
-  
-    F -->|analyze_risk/predict_price| K[Backend API]
-    K -->|Calculate| L1[Risk Analysis]
-    K -->|Forecast| L2[Price Prediction]
-  
-    G --> M[Context Assembly]
-    H --> M
-    J1 --> M
-    J2 --> M
-    L1 --> M
-    L2 --> M
-  
-    M -->|Aggregated Data| N[Groq LLM]
-    N -->|reasoning_effort: medium| O[Synthesize Analysis]
-    O -->|Final Report| P[User Response]
-  
-    style E fill:#ccffcc,stroke:#333,stroke-width:2px
-    style G fill:#ccffcc,stroke:#333,stroke-width:2px
-    style H fill:#ffcccc,stroke:#333
-    style C fill:#e6f3ff,stroke:#333,stroke-width:2px
-    style N fill:#e6f3ff,stroke:#333,stroke-width:2px
-    style K fill:#fff4cc,stroke:#333
+    A[User Query] -->|Input| B[LangGraph Agent]
+    
+    B -->|1. Parse Query| C[Groq LLM - Query Parser]
+    C -->|Extract| D{Symbol Resolution}
+    
+    D -->|Search| E[Alpha Vantage]
+    E -->|Return| F[Symbol + Metadata]
+    
+    F -->|2. Plan Tools| G[Tool Router]
+    
+    G -->|Data Tools| H[Perplexity Client]
+    H -.->|Fallback| I[Alpha Vantage]
+    
+    G -->|News Tools| J[News Aggregator]
+    J -->|Fetch| K1[Perplexity]
+    J -->|Fetch| K2[LiveMint]
+    J -->|Fetch| K3[Google Search]
+    J -->|Fetch| K4[NewsAPI]
+    
+    G -->|Analysis Tools| L[Backend API]
+    L -->|Risk| M1[Risk Analysis Module]
+    L -->|Predict| M2[Price Prediction Module]
+    L -->|Market Make| M3[Market Maker Module]
+    L -->|Chart| M4[Chart Analysis Module]
+    L -->|Summarize| M5[News Summary Module]
+    
+    H --> N[Tool Results]
+    K1 --> N
+    K2 --> N
+    K3 --> N
+    K4 --> N
+    M1 --> N
+    M2 --> N
+    M3 --> N
+    M4 --> N
+    M5 --> N
+    
+    N -->|3. Sub-Agent Analysis| O[Market Data Agent]
+    N -->|3. Sub-Agent Analysis| P[Risk Agent]
+    N -->|3. Sub-Agent Analysis| Q[Sentiment Agent]
+    N -->|3. Sub-Agent Analysis| R[Prediction Agent]
+    
+    O --> S[Agent Reports]
+    P --> S
+    Q --> S
+    R --> S
+    
+    S -->|4. Synthesize| T[Groq LLM - Synthesis]
+    T -->|Final Report| U[User Response + PDF]
 ```
+
+## 🔌 API Call Flow
+
+### Backend API Endpoints
+
+| Endpoint | Method | Purpose | Returns |
+|----------|--------|---------|---------|
+| `/api/health` | GET | Health check | Service status |
+| `/api/analyze-risk` | POST | Risk metrics calculation | Volatility, VaR, Sharpe, Drawdown, Beta, etc. |
+| `/api/predict-price` | POST | Price prediction (EMA/Linear) | Predicted price, scenarios, support/resistance |
+| `/api/market-maker/quote` | POST | Avellaneda-Stoikov quotes | Bid, Ask, Spread, Reservation price |
+| `/api/analyze-chart` | POST | Technical chart analysis | AI-generated technical insights |
+| `/api/summarize-news` | POST | News summarization | AI-generated news summary |
+| `/api/analyze-news` | POST | Multi-source news analysis | Combined sentiment, themes, analysis |
+| `/api/groq-query` | POST | Direct LLM queries | LLM response |
+| `/api/search-analysis` | POST | Grounded stock analysis | Full analysis with search |
+
+### Agent Tools (in `agents/tools.py`)
+
+| Tool | Purpose | Calls |
+|------|---------|-------|
+| `get_stock_price` | Current quote + basics | Perplexity → Alpha Vantage |
+| `get_stock_info` | Company fundamentals | Perplexity → Alpha Vantage |
+| `get_financial_metrics` | Detailed ratios | Perplexity fallback |
+| `get_hist_data` | OHLCV historical data | Perplexity → Alpha Vantage |
+| `get_analyze_risk` | Risk metrics | Backend `/api/analyze-risk` |
+| `predict_price` | Price forecasting | Backend `/api/predict-price` |
+| `get_market_maker_quote` | Bid/Ask quotes | Backend `/api/market-maker/quote` |
+| `get_stock_news` | Stock-specific news | LiveMint → Google → NewsAPI |
+| `analyze_news_sentiment` | Sentiment scoring | Tool aggregation |
+| `analyze_combined_news` | Multi-source analysis | Backend `/api/analyze-news` |
+| `analyze_chart` | Technical analysis | Backend `/api/analyze-chart` |
+| `summarize_news_articles` | News summary | Backend `/api/summarize-news` |
+| `compare_stocks` | Multi-stock comparison | Perplexity |
+| `search_grounded_analysis` | Full analysis | Perplexity |
+
+### Sub-Agent Analysis Pipeline
+
+Each sub-agent receives specific data and produces structured insights:
+
+1. **Market Data Agent** → Price action, volume, valuation, technical levels
+2. **Risk Agent** → Volatility, VaR, drawdown, beta, risk assessment
+3. **Sentiment Agent** → News sentiment, themes, credibility analysis
+4. **Prediction Agent** → Trend analysis, price targets, momentum
+
+## 📋 Report Sections
+
+The final report includes:
+
+1. **Executive Summary** - Key findings + BUY/HOLD/SELL recommendation
+2. **Query Context** - Timeframe, sentiment focus, news category
+3. **Sub-Agent Insights** - Detailed analysis from each agent
+4. **Current Market Data** - Price, market cap, P/E, volume, 52-week range
+5. **Financial Metrics** - Valuation, profitability, growth, health ratios
+6. **Risk Analysis** - Volatility, VaR, Sharpe, drawdown, beta
+7. **Price Prediction** - Forecast, scenarios, support/resistance
+8. **Sentiment Analysis** - News sentiment breakdown
+9. **Market Maker Quote** - Avellaneda-Stoikov bid/ask
+10. **Technical Chart Analysis** - AI technical insights
+11. **News Articles** - Recent headlines with links
+12. **Disclaimer** - Standard financial disclaimer
 
 ## 🚀 Getting Started
 
@@ -121,6 +209,7 @@ graph TD
    PERPLEXITY_MODEL=sonar
    ALPHAVANTAGE_API_KEY=your_alpha_vantage_api_key_here
    NEWSAPI_KEY=your_newsapi_key_here
+   GOOGLE_API_KEY=your_google_api_key_here
    BACKEND_URL=http://localhost:8000
    LLM_TEMPERATURE=1
    MAX_TOKENS=2048
@@ -156,20 +245,6 @@ uvicorn backend.app:app --reload
 
 API Documentation will be available at: `http://localhost:8000/docs`
 
-### API Endpoints
-
-The backend provides REST APIs for various financial analysis functions:
-
-- `GET /api/health` - Health check
-- `POST /api/search-analysis` - Comprehensive stock analysis
-- `POST /api/analyze-news` - News sentiment analysis
-- `POST /api/analyze-chart` - Technical chart analysis
-- `POST /api/summarize-news` - News summarization
-- `POST /api/risk-analysis` - Risk metrics calculation
-- `POST /api/predict-price` - Price prediction (EMA/Linear Regression)
-- `POST /api/market-maker/quote` - Market maker bid/ask quotes
-- `POST /api/groq-query` - Direct Groq LLM queries
-
 ## 🧩 Project Structure
 
 ```
@@ -186,12 +261,13 @@ fin-alpha/
 │   ├── config.py         # Agent configuration
 │   ├── run.py            # CLI entry point
 │   ├── state.py          # Agent state definition
-│   ├── tools.py          # LangChain tools
+│   ├── tools.py          # LangChain tools (17 tools)
 │   ├── pdf_exporter.py   # PDF report generation
 │   ├── clients/
 │   │   ├── __init__.py
 │   │   ├── alphavantage_client.py
 │   │   ├── backend_client.py
+│   │   ├── google_search_client.py
 │   │   ├── mint_client.py
 │   │   ├── news_api.py
 │   │   └── perplexity_client.py
@@ -204,10 +280,10 @@ fin-alpha/
 │       └── tools_prompts.py
 ├── backend/
 │   ├── __init__.py
-│   ├── app.py            # FastAPI application
+│   ├── app.py            # FastAPI application (14 endpoints)
 │   ├── config.py         # Backend configuration
 │   ├── groq_helper.py    # Groq API helper
-│   ├── market_maker.py   # Market making models
+│   ├── market_maker.py   # Avellaneda-Stoikov model
 │   ├── mint.py           # LiveMint scraper
 │   ├── models.py         # Pydantic models
 │   ├── price_prediction.py

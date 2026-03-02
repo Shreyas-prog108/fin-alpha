@@ -43,7 +43,7 @@ from backend.models import (
 from backend.risk_analysis import analyze_risk
 from backend.market_maker import market_maker_quote
 from backend.price_prediction import predict_price
-from backend.groq_helper import query_groq
+from backend.groq_helper import query_groq, query_groq_with_search
 
 load_dotenv()
 
@@ -228,37 +228,34 @@ async def search_grounded_analysis(
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Perform comprehensive stock analysis using Groq.
-    (Note: Google Search grounding is NOT supported on Groq, falling back to basic analysis)
+    Perform comprehensive stock analysis using Gemini with Google Search grounding.
+    Falls back to plain Groq if GOOGLE_API_KEY is unavailable.
     """
     try:
-        # Build prompt for Groq (without search capability)
-        prompt = f"""You are a financial analyst. Analyze this stock based on your knowledge.
+        prompt = f"""You are a financial analyst. Analyze {request.company_name} ({request.symbol}).
 
-**Stock:** {request.company_name} ({request.symbol})
 **Analysis Type:** {request.query_type}
 **Time Frame:** {request.time_frame}
 
-Please provide:
-1. **Analysis**: Based on general knowledge (Note: Live search is disabled).
-2. **Investment Recommendation**: BUY / HOLD / SELL
-3. **Key Factors**
+Search for the latest news and data, then provide:
+1. **Analysis**: Current situation based on real-time information.
+2. **Investment Recommendation**: BUY / HOLD / SELL with reasoning.
+3. **Key Factors**: Main drivers and risks.
 
 Format your response with clear sections."""
 
-        # Query Groq
-        response_text = await query_groq(prompt)
-        
+        result = await query_groq_with_search(prompt)
+
         return {
             "symbol": request.symbol,
             "company_name": request.company_name,
             "query_type": request.query_type,
             "time_frame": request.time_frame,
-            "analysis": response_text,
-            "sources": [],
-            "search_used": False
+            "analysis": result["response"],
+            "sources": result["sources"],
+            "search_used": result["search_used"],
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -530,8 +527,8 @@ async def price_prediction(
         result = await predict_price(
             request.symbol,
             request.data,
-            request.method,
-            request.ema_span
+            request.method or "ema",
+            request.ema_span or 10
         )
         return result
     except ValueError as e:
@@ -566,7 +563,7 @@ async def market_maker_endpoint(
             request.time_horizon,
             request.inventory,
             request.kappa,
-            request.max_spread
+            request.max_spread or 0.0
         )
         return result
     except ValueError as e:

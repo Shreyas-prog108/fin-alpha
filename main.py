@@ -21,6 +21,86 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def _ensure_dependencies(python_bin: str) -> bool:
+    """
+    Ensure all dependencies from requirements.txt are installed using uv pip.
+    Installs uv if needed, then retries once on failure.
+    """
+    requirements_file = ROOT / "requirements.txt"
+    if not requirements_file.exists():
+        print("[WARN] requirements.txt not found, skipping dependency installation.")
+        return True
+
+    print("[INSTALL] Installing dependencies with uv pip...")
+
+    # Ensure uv is available
+    uv_check = subprocess.run(
+        [python_bin, "-m", "uv", "--version"],
+        cwd=ROOT,
+        capture_output=True,
+    )
+    if uv_check.returncode != 0:
+        print("[INSTALL] uv not found, installing...")
+        install_uv = subprocess.run(
+            [python_bin, "-m", "pip", "install", "uv"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if install_uv.returncode != 0:
+            print("[WARN] Could not install uv, falling back to pip...")
+            use_uv = False
+        else:
+            print("[INSTALL] uv installed successfully.")
+            use_uv = True
+    else:
+        use_uv = True
+
+    # Build install command
+    if use_uv:
+        install_cmd = [
+            python_bin,
+            "-m",
+            "uv",
+            "pip",
+            "install",
+            "-r",
+            str(requirements_file),
+        ]
+    else:
+        install_cmd = [
+            python_bin,
+            "-m",
+            "pip",
+            "install",
+            "-r",
+            str(requirements_file),
+        ]
+
+    result = subprocess.run(
+        install_cmd,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("[INSTALL] First attempt failed, retrying...")
+        retry = subprocess.run(
+            install_cmd,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if retry.returncode != 0:
+            print("[ERROR] pip install failed:")
+            print(retry.stderr.strip() or retry.stdout.strip())
+            return False
+        print("[INSTALL] Dependencies installed successfully on retry.")
+    else:
+        print("[INSTALL] Dependencies installed successfully.")
+    return True
+
+
 def _pick_python_executable() -> str:
     venv_python = ROOT / "venv" / "bin" / "python"
     if venv_python.exists():
@@ -55,10 +135,6 @@ def _terminate_process(proc: subprocess.Popen | None) -> None:
 
 
 def _ensure_langgraph_compat(python_bin: str, env: dict) -> bool:
-    """
-    Ensure agent imports cleanly. Auto-repair known langgraph mismatch where
-    langgraph-checkpoint/prebuilt from newer stacks conflicts with langgraph==0.0.26.
-    """
     import_cmd = [python_bin, "-c", "import agents.agent"]
     first = subprocess.run(import_cmd, cwd=ROOT, env=env, capture_output=True, text=True)
     if first.returncode == 0:
@@ -95,6 +171,8 @@ def main() -> int:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT)
     python_bin = _pick_python_executable()
+    if not _ensure_dependencies(python_bin):
+        return 1
     host = env.get("FIN_ALPHA_HOST", "127.0.0.1")
     port = env.get("FIN_ALPHA_PORT", "8000")
     backend_base_url = f"http://{host}:{port}"
@@ -125,6 +203,7 @@ def main() -> int:
 
     try:
         print(f"[START] Using Python: {python_bin}")
+        print("[START] Checking dependencies...")
         if not _ensure_langgraph_compat(python_bin, env):
             return 1
         if _wait_for_backend(backend_health_url, timeout_sec=2):

@@ -384,7 +384,11 @@ Extract the following and return ONLY a valid JSON object:
 1. **symbols**: Exact ticker symbols for the stocks mentioned.
    - Use exchange-qualified format where needed (e.g., SAP.DE, AIR.PA, 7203.T, D05.SI, RELIANCE.NSE).
    - For US symbols, no suffix needed when standard (e.g., AAPL, MSFT).
-   - If unsure, provide the best likely tradable ticker.
+   - IMPORTANT: For non-US companies, use their PRIMARY/home exchange listing:
+     * Indian stocks: use .NSE or .BSE (e.g., RELIANCE.NSE, TCS.NS)
+     * European stocks: use locale.g., SAP exchange (.DE, SHEL.L)
+     * Asian stocks: use local exchange (e.g., 7203.T, 9988.HK)
+   - Avoid US OTC tickers (like GRSXY) when the company has a primary listing elsewhere
 
 2. **company_names**: Full company names corresponding to each symbol
 
@@ -595,6 +599,7 @@ Return ONLY this JSON format (no other text):
             tools = [
                 "get_stock_price",
                 "get_stock_info",
+                "get_financial_metrics",
                 "get_hist_data",
                 "get_analyze_risk",
                 "predict_price",
@@ -765,15 +770,15 @@ Return ONLY this JSON format (no other text):
             data_blob = json.dumps(agent_inputs.get(agent_name, {}), indent=2)
             agent_prompt = f"""{prompt.strip()}
 
-Symbol: {symbol}
-Time Frame: {timeframe}
-Sentiment Focus: {sentiment_focus}
-News Category: {news_category}
+SYMBOL: {symbol}
+TIME FRAME: {timeframe}
+SENTIMENT FOCUS: {sentiment_focus}
+NEWS CATEGORY: {news_category}
 
-Data:
+DATA INPUT:
 {data_blob}
 
-Return concise bullet points (3-5) with actionable insights."""
+IMPORTANT: Follow the MANDATORY OUTPUT FORMAT specified in your instructions above. Provide detailed analysis with specific numbers. Do NOT provide BUY/SELL recommendations - focus on your specialized analysis."""
             content = await self._safe_generate(agent_prompt, state)
             if isinstance(content, list):
                 content = " ".join(str(item) for item in content)
@@ -957,16 +962,75 @@ IMPORTANT:
                 price_data = {}
         
         if price_data and not price_data.get("error"):
+            current_price = price_data.get('current_price', 0)
+            market_cap = price_data.get('market_cap', 0)
+            pe_ratio = price_data.get('pe_ratio', 0)
+            currency = price_data.get('currency', '$')
+            
+            # Also try to get from financial metrics if not in price data
+            metrics_data = tool_results.get("get_financial_metrics", {})
+            if isinstance(metrics_data, str):
+                try:
+                    metrics_data = json.loads(metrics_data)
+                except:
+                    metrics_data = {}
+            
+            # Use financial metrics as fallback for missing data
+            if (not market_cap or market_cap == 0) and metrics_data:
+                market_cap = metrics_data.get('market_cap', 0)
+            if (not pe_ratio or pe_ratio == 0) and metrics_data:
+                pe_ratio = metrics_data.get('pe_ratio', 0)
+            
+            # Format market cap nicely (handle Indian stock format - crores)
+            if market_cap and market_cap > 0:
+                if currency == 'INR':
+                    # Indian format - crores
+                    if market_cap >= 1e7:  # 10 crore
+                        market_cap_str = f"₹{market_cap/1e7:.2f}Cr"
+                    else:
+                        market_cap_str = f"₹{market_cap:,.0f}"
+                else:
+                    # US format
+                    if market_cap >= 1e12:
+                        market_cap_str = f"${market_cap/1e12:.2f}T"
+                    elif market_cap >= 1e9:
+                        market_cap_str = f"${market_cap/1e9:.2f}B"
+                    else:
+                        market_cap_str = f"${market_cap:,.0f}"
+            else:
+                market_cap_str = "N/A"
+            
+            # Format PE ratio
+            if pe_ratio and pe_ratio > 0:
+                pe_str = f"{pe_ratio:.2f}x"
+            else:
+                pe_str = "N/A"
+            
+            # Format price
+            if current_price and current_price > 0:
+                price_str = f"{currency}{current_price:.2f}"
+            else:
+                price_str = "N/A"
+            
+            # Get 52-week data from price or metrics
+            week52_low = price_data.get('fifty_two_week_low') or (metrics_data.get('fifty_two_week_low') if metrics_data else None)
+            week52_high = price_data.get('fifty_two_week_high') or (metrics_data.get('fifty_two_week_high') if metrics_data else None)
+            sector = price_data.get('sector') or (metrics_data.get('sector') if metrics_data else None) or "N/A"
+            industry = price_data.get('industry') or (metrics_data.get('industry') if metrics_data else None) or "N/A"
+            
             detailed_sections.append(f"""
 ### 📈 Current Market Data
 
-- **Current Price:** {price_data.get('current_price', 'N/A')}
-- **Market Cap:** {price_data.get('market_cap', 0):,.0f}
-- **P/E Ratio:** {price_data.get('pe_ratio', 'N/A')}
-- **Day Change:** {price_data.get('change', 0):.2f} ({price_data.get('change_percent', 0):.2f}%)
-- **Day Range:** {price_data.get('low', 'N/A')} - {price_data.get('high', 'N/A')}
+- **Current Price:** {price_str}
+- **Market Cap:** {market_cap_str}
+- **P/E Ratio:** {pe_str}
+- **Day Change:** {price_data.get('change', 0):+.2f} ({price_data.get('change_percent', 0):+.2f}%)
+- **Day Range:** {currency}{price_data.get('low', 'N/A')} - {currency}{price_data.get('high', 'N/A')}
+- **52-Week Range:** {currency}{week52_low if week52_low else 'N/A'} - {currency}{week52_high if week52_high else 'N/A'}
 - **Volume:** {price_data.get('volume', 0):,.0f}
-- **Sector:** {price_data.get('sector', 'N/A')}
+- **Exchange:** {price_data.get('exchange', 'N/A')}
+- **Sector:** {sector}
+- **Industry:** {industry}
 """)
         metrics_data = tool_results.get("get_financial_metrics", {})
         if isinstance(metrics_data, str):
@@ -975,29 +1039,60 @@ IMPORTANT:
             except:
                 metrics_data = {}
         
+        # Helper to format ratio values
+        def fmt_ratio(value, suffix='x'):
+            if value and value > 0:
+                return f"{value:.2f}{suffix}"
+            return "N/A"
+        
+        def fmt_pct(value):
+            if value and value != 0:
+                return f"{value:+.2f}%"
+            return "N/A"
+        
+        def fmt_number(value):
+            if value and value != 0:
+                return f"{value:,.2f}"
+            return "N/A"
+        
         if metrics_data and not metrics_data.get("error"):
             detailed_sections.append(f"""
 ### 💰 Financial Metrics
 
-**Profitability:**
-- Profit Margin: {metrics_data.get('profit_margin', 0):.2f}%
-- Operating Margin: {metrics_data.get('operating_margin', 0):.2f}%
-- ROE (Return on Equity): {metrics_data.get('roe', 0):.2f}%
-- ROA (Return on Assets): {metrics_data.get('roa', 0):.2f}%
-
 **Valuation Ratios:**
-- P/E Ratio: {metrics_data.get('pe_ratio', 'N/A')}
-- Forward P/E: {metrics_data.get('forward_pe', 'N/A')}
-- Price to Book: {metrics_data.get('price_to_book', 'N/A')}
-- PEG Ratio: {metrics_data.get('peg_ratio', 'N/A')}
+- P/E Ratio: {fmt_ratio(metrics_data.get('pe_ratio'))}
+- Forward P/E: {fmt_ratio(metrics_data.get('forward_pe'))}
+- Price to Book (P/B): {fmt_ratio(metrics_data.get('price_to_book'))}
+- Price to Sales (P/S): {fmt_ratio(metrics_data.get('price_to_sales'))}
+- EV/EBITDA: {fmt_ratio(metrics_data.get('ev_to_ebitda'))}
+- PEG Ratio: {fmt_ratio(metrics_data.get('peg_ratio'))}
+- Dividend Yield: {fmt_pct(metrics_data.get('dividend_yield'))}
+
+**Profitability:**
+- Profit Margin: {fmt_pct(metrics_data.get('profit_margin'))}
+- Operating Margin: {fmt_pct(metrics_data.get('operating_margin'))}
+- Gross Margin: {fmt_pct(metrics_data.get('gross_margin'))}
+- ROE (Return on Equity): {fmt_pct(metrics_data.get('roe'))}
+- ROA (Return on Assets): {fmt_pct(metrics_data.get('roa'))}
+- ROIC (Return on Invested Capital): {fmt_pct(metrics_data.get('roic'))}
 
 **Growth:**
-- Revenue Growth: {metrics_data.get('revenue_growth', 0):.2f}%
-- Earnings Growth: {metrics_data.get('earnings_growth', 0):.2f}%
+- Revenue Growth (YoY): {fmt_pct(metrics_data.get('revenue_growth'))}
+- Earnings Growth (YoY): {fmt_pct(metrics_data.get('earnings_growth'))}
+- EPS (Earnings Per Share): {fmt_number(metrics_data.get('eps'))}
 
 **Financial Health:**
-- Debt to Equity: {metrics_data.get('debt_to_equity', 'N/A')}
-- Current Ratio: {metrics_data.get('current_ratio', 'N/A')}
+- Debt to Equity: {fmt_ratio(metrics_data.get('debt_to_equity'))}
+- Current Ratio: {fmt_ratio(metrics_data.get('current_ratio'))}
+- Quick Ratio: {fmt_ratio(metrics_data.get('quick_ratio'))}
+- Net Debt/EBITDA: {fmt_ratio(metrics_data.get('net_debt_to_ebitda'))}
+
+**Company Info:**
+- Market Cap: {fmt_number(metrics_data.get('market_cap'))}
+- Enterprise Value: {fmt_number(metrics_data.get('enterprise_value'))}
+- Sector: {metrics_data.get('sector', 'N/A')}
+- Industry: {metrics_data.get('industry', 'N/A')}
+- Beta: {fmt_ratio(metrics_data.get('beta', 0), '')}
 """)
         risk_data = tool_results.get("get_analyze_risk", {})
         if isinstance(risk_data, str):
@@ -1006,16 +1101,45 @@ IMPORTANT:
             except:
                 risk_data = {}
         
+        # Helper for risk metrics
+        def fmt_pct_risk(value):
+            if value and value != 0:
+                return f"{value*100:.2f}%"
+            return "N/A"
+        
+        def fmt_ratio_risk(value):
+            if value and value != 0:
+                return f"{value:.2f}"
+            return "N/A"
+        
         if risk_data and not risk_data.get("error"):
             detailed_sections.append(f"""
 ### ⚠️ Risk Analysis
 
-- **Volatility (Annualized):** {risk_data.get('volatility', 0):.2%}
-- **Max Drawdown:** {risk_data.get('max_drawdown', 0):.2%}
-- **Sharpe Ratio:** {risk_data.get('sharpe_ratio', 'N/A')}
-- **VaR (95%):** {risk_data.get('var_95', 0):.2f}
-- **Beta:** {risk_data.get('beta', 'N/A')}
-- **Risk Level:** {risk_data.get('risk_level', 'N/A').upper()}
+**Volatility Metrics:**
+- Annualized Volatility: {fmt_pct_risk(risk_data.get('volatility', 0))}
+- Daily Volatility: {fmt_pct_risk(risk_data.get('daily_volatility', 0))}
+- Volatility vs Sector: {risk_data.get('volatility_vs_sector', 'N/A')}
+
+**Downside Risk:**
+- Maximum Drawdown: {fmt_pct_risk(risk_data.get('max_drawdown', 0))}
+- Value at Risk (VaR 95%): {fmt_ratio_risk(risk_data.get('var_95', 0))}
+- Conditional VaR (CVaR 95%): {fmt_ratio_risk(risk_data.get('cvar_95', 0))}
+- Sortino Ratio: {fmt_ratio_risk(risk_data.get('sortino_ratio', 0))}
+
+**Risk-Adjusted Returns:**
+- Sharpe Ratio: {fmt_ratio_risk(risk_data.get('sharpe_ratio', 0))}
+- Treynor Ratio: {fmt_ratio_risk(risk_data.get('treynor_ratio', 0))}
+- Information Ratio: {fmt_ratio_risk(risk_data.get('information_ratio', 0))}
+
+**Market Sensitivity:**
+- Beta: {fmt_ratio_risk(risk_data.get('beta', 0))}
+- Alpha: {fmt_ratio_risk(risk_data.get('alpha', 0))}
+- R-Squared: {fmt_ratio_risk(risk_data.get('r_squared', 0))}
+
+**Risk Assessment:**
+- Overall Risk Level: {risk_data.get('risk_level', 'N/A').upper()}
+- Risk Flag: {risk_data.get('risk_flag', 'N/A')}
 """)
         prediction_data = tool_results.get("predict_price", {})
         if isinstance(prediction_data, str):
@@ -1025,14 +1149,41 @@ IMPORTANT:
                 prediction_data = {}
         
         if prediction_data and not prediction_data.get("error"):
+            predicted_price = prediction_data.get('predicted_price', 0)
+            current_price_pred = prediction_data.get('current_price', 0)
+            currency_pred = prediction_data.get('currency', '$')
+            
+            if predicted_price and predicted_price > 0:
+                pred_price_str = f"{currency_pred}{predicted_price:.2f}"
+            else:
+                pred_price_str = "N/A"
+            
+            if current_price_pred and current_price_pred > 0:
+                curr_price_str = f"{currency_pred}{current_price_pred:.2f}"
+            else:
+                curr_price_str = "N/A"
+            
             detailed_sections.append(f"""
 ### 🔮 Price Prediction
 
-- **Predicted Price (Next Period):** {prediction_data.get('predicted_price', 'N/A')}
-- **Current Price:** {prediction_data.get('current_price', 'N/A')}
-- **Expected Change:** {prediction_data.get('predicted_change_percent', 0):.2f}%
-- **Method Used:** {prediction_data.get('method', 'N/A').upper()}
-- **Confidence:** {prediction_data.get('confidence', 'N/A')}
+**Price Outlook:**
+- Current Price: {curr_price_str}
+- Predicted Price ({prediction_data.get('timeframe', 'Next Period')}): {pred_price_str}
+- Expected Change: {prediction_data.get('predicted_change_percent', 0):+.2f}%
+
+**Model Details:**
+- Method: {prediction_data.get('method', 'N/A').upper()}
+- Confidence: {prediction_data.get('confidence', 'N/A')}
+- Model Accuracy: {prediction_data.get('accuracy', 'N/A')}
+
+**Price Scenarios:**
+- Bull Case: {prediction_data.get('bull_case', 'N/A')}
+- Bear Case: {prediction_data.get('bear_case', 'N/A')}
+- Base Case: {prediction_data.get('base_case', 'N/A')}
+
+**Key Levels:**
+- Support: {prediction_data.get('support_level', 'N/A')}
+- Resistance: {prediction_data.get('resistance_level', 'N/A')}
 """)
         sentiment_data = tool_results.get("analyze_news_sentiment", {})
         if isinstance(sentiment_data, str):
@@ -1042,17 +1193,36 @@ IMPORTANT:
                 sentiment_data = {}
         
         if sentiment_data and not sentiment_data.get("error"):
+            total_articles = sentiment_data.get('total_articles', 0)
+            positive = sentiment_data.get('positive_count', 0)
+            negative = sentiment_data.get('negative_count', 0)
+            neutral = sentiment_data.get('neutral_count', 0)
+            
+            # Calculate percentages
+            if total_articles > 0:
+                pos_pct = (positive / total_articles) * 100
+                neg_pct = (negative / total_articles) * 100
+                neu_pct = (neutral / total_articles) * 100
+            else:
+                pos_pct = neg_pct = neu_pct = 0
+            
             detailed_sections.append(f"""
 ### 📊 News Sentiment Analysis
 
-- **Overall Sentiment:** {sentiment_data.get('overall_sentiment', 'N/A').upper()}
-- **Sentiment Score:** {sentiment_data.get('sentiment_score', 0):.2f}
-- **Confidence:** {sentiment_data.get('confidence', 'N/A').upper()}
-- **Articles Analyzed:** {sentiment_data.get('total_articles', 0)}
-  - Positive: {sentiment_data.get('positive_count', 0)}
-  - Negative: {sentiment_data.get('negative_count', 0)}
-  - Neutral: {sentiment_data.get('neutral_count', 0)}
-- **Summary:** {sentiment_data.get('summary', 'N/A')}
+**Sentiment Overview:**
+- Overall Sentiment: {sentiment_data.get('overall_sentiment', 'N/A').upper()}
+- Sentiment Score: {sentiment_data.get('sentiment_score', 0):+.2f} (-1 to +1 scale)
+- Confidence: {sentiment_data.get('confidence', 'N/A').upper()}
+
+**Article Breakdown ({total_articles} articles):**
+- Positive: {positive} articles ({pos_pct:.1f}%)
+- Negative: {negative} articles ({neg_pct:.1f}%)
+- Neutral: {neutral} articles ({neu_pct:.1f}%)
+
+**Summary:** {sentiment_data.get('summary', 'N/A')}
+
+**Top Headlines:**
+{chr(10).join(f"- {title}" for title in sentiment_data.get('top_headlines', [])[:5])}
 """)
         combined_news_data = tool_results.get("analyze_combined_news", {})
         if isinstance(combined_news_data, str):
@@ -1094,6 +1264,49 @@ IMPORTANT:
 ### 📰 AI-Generated News Summary
 
         {news_summary_data.get('summary', 'N/A')}
+""")
+        
+        # Market Maker Quote
+        market_maker_data = tool_results.get("get_market_maker_quote", {})
+        if isinstance(market_maker_data, str):
+            try:
+                market_maker_data = json.loads(market_maker_data)
+            except:
+                market_maker_data = {}
+        
+        if market_maker_data and not market_maker_data.get("error"):
+            mm_mid = market_maker_data.get('mid_price', 0)
+            mm_spread = market_maker_data.get('spread', 0)
+            mm_spread_pct = market_maker_data.get('spread_percent', 0)
+            mm_currency = '$'
+            
+            bid_val = market_maker_data.get('bid_price', market_maker_data.get('bid', 'N/A'))
+            ask_val = market_maker_data.get('ask_price', market_maker_data.get('ask', 'N/A'))
+            res_price = market_maker_data.get('reservation_price', 0)
+            vol_used = market_maker_data.get('volatility_used', 0)
+            inv_val = market_maker_data.get('params', {}).get('inventory', 0)
+            time_horizon = market_maker_data.get('params', {}).get('T', 'N/A')
+            
+            detailed_sections.append(f"""
+### 📊 Market Maker Quote (Avellaneda-Stoikov)
+
+**Spread Analysis:**
+- Optimal Bid Price: {mm_currency}{bid_val}
+- Optimal Ask Price: {mm_currency}{ask_val}
+- Spread: {mm_currency}{mm_spread:.4f} ({mm_spread_pct:.4f}%)
+
+**Parameters Used:**
+- Mid Price: {mm_currency}{mm_mid:.2f}
+- Volatility (Annualized): {vol_used*100:.2f}%
+- Risk Aversion (γ): {market_maker_data.get('risk_aversion', 'N/A')}
+- Order Intensity (κ): {market_maker_data.get('kappa', 'N/A')}
+- Time Horizon: {time_horizon} years
+
+**Inventory Risk:**
+- Current Inventory: {inv_val:.2f} units
+- Reservation Price: {mm_currency}{res_price:.2f}
+- Adjustment: {market_maker_data.get('inventory_adjustment', 'N/A')}
+- Quote Recommendation: {market_maker_data.get('quote_recommendation', 'N/A')}
 """)
         news_section = ""  
         if news_refs:

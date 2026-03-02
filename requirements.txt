@@ -9,10 +9,13 @@ pydantic
 pydantic-settings
 httpx
 requests
+openai
+google-generativeai
 numpy
 pandas
 python-dotenv
 reportlab
+feedparser
 
 
 typer

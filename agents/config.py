@@ -16,6 +16,8 @@ class AgentConfig(BaseSettings):
     GROQ_API_KEY: str = Field(...)
     PERPLEXITY_API_KEY: Optional[str] = Field(None)
     PERPLEXITY_MODEL: str = Field("sonar")
+    GOOGLE_API_KEY: Optional[str] = Field(None)
+    GEMINI_MODEL: str = Field("gemini-2.5-flash")
     NEWSAPI_KEY: Optional[str] = Field(None)
     ALPHAVANTAGE_API_KEY: Optional[str] = Field(None)
     NEWSAPI_URL: str = Field("https://newsapi.org/v2")

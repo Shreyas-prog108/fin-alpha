@@ -4,9 +4,8 @@ Handles API key authentication for Groq API
 """
 import logging
 from fastapi import HTTPException, status
-import httpx
 from groq import AsyncGroq
-from backend.config import GROQ_API_KEY, GROQ_MODEL
+from backend.config import GROQ_API_KEY, GROQ_MODEL, GOOGLE_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +61,50 @@ async def query_groq(prompt: str, use_search: bool = False) -> str:
 
 async def query_groq_with_search(prompt: str) -> dict:
     """
-    Query Groq API. Search grounding is currently NOT supported on Groq.
-    Returns response text and empty sources for compatibility.
+    Query Gemini with Google Search grounding for real-time grounded answers.
+    Falls back to plain Groq if GOOGLE_API_KEY is unavailable.
+    Returns response text, sources, and search_used flag.
     """
+    if GOOGLE_API_KEY:
+        try:
+            import google.generativeai as genai  # type: ignore
+
+            genai.configure(api_key=GOOGLE_API_KEY)
+            model = genai.GenerativeModel(
+                model_name=GEMINI_MODEL,
+                tools=[{"google_search": {}}],
+            )
+            response = model.generate_content(prompt)
+            text = response.text or ""
+
+            # Extract grounding sources
+            sources: list[str] = []
+            try:
+                for candidate in response.candidates:
+                    gm = getattr(candidate, "grounding_metadata", None)
+                    if gm is None:
+                        continue
+                    for chunk in (getattr(gm, "grounding_chunks", None) or []):
+                        web = getattr(chunk, "web", None)
+                        if web:
+                            uri = getattr(web, "uri", "") or ""
+                            if uri:
+                                sources.append(uri)
+            except Exception:
+                pass
+
+            return {
+                "response": text,
+                "sources": sources,
+                "search_used": True,
+            }
+        except Exception as e:
+            logger.warning(f"Gemini search failed, falling back to Groq: {e}")
+
+    # Fallback: plain Groq (no search)
     text = await query_groq(prompt)
     return {
         "response": text,
         "sources": [],
-        "search_used": False
+        "search_used": False,
     }

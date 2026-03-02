@@ -19,7 +19,7 @@ class NewsClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("NEWSAPI_KEY")
         self.base_url = os.getenv("NEWSAPI_URL", "https://newsapi.org/v2")
-        self.max_lookback_days = int(os.getenv("NEWSAPI_MAX_DAYS", "30"))
+        self.max_lookback_days = int(os.getenv("NEWSAPI_MAX_DAYS", "14"))
         self.positive_words = {
             'surge', 'soar', 'jump', 'rally', 'gain', 'rise', 'climb', 'advance',
             'strong', 'positive', 'bullish', 'optimistic', 'growth', 'profit',
@@ -56,8 +56,13 @@ class NewsClient:
             print("[NEWS API] No API key found, using fallback")
             return self._get_fallback_news(symbol, company_name, category=category)
         
+        query = ""
+        url = ""
+        from_date = ""
+        
         try:
             effective_days = max(1, min(int(days), self.max_lookback_days))
+            effective_days = min(effective_days, 7)
             from_date = (datetime.now() - timedelta(days=effective_days)).strftime("%Y-%m-%d")
             base_query = f'"{company_name}" OR "{symbol}" OR "{symbol} stock" OR "{symbol} share"'
             if category and category.lower() not in ["general", "all", "any"]:
@@ -115,7 +120,6 @@ class NewsClient:
             if hasattr(e, 'response') and e.response is not None:
                 body_preview = e.response.text[:200]
                 print(f"[NEWS API ERROR] Response: {body_preview}")
-                # Retry once with provider-advertised earliest allowed date.
                 if e.response.status_code == 426:
                     try:
                         payload = e.response.json()
